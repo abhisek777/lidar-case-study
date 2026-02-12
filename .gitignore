@@ -1,0 +1,23 @@
+# Large data files
+*.zip
+192.168.26.26_2020-11-25_20-01-45_frame-1899_part_1/
+
+# Intermediate frame outputs
+lidar_frames/
+lidar_video_frames/
+real_lidar_video/
+lidar_3d_output/
+my_output/
+output_dir/
+pipeline_output/
+test_frames/
+lidar_test_frames/
+academic_figures/frames/
+semantic_output/frames/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
