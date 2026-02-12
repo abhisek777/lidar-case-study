@@ -1,6 +1,9 @@
 """
-Generate a PDF document for the professor explaining the project,
-how to run the code, and correcting the citation error.
+Generate a PDF document for the professor with:
+- Apology and citation correction
+- All references in IU/APA format
+- How to run the code
+- Output examples
 """
 
 import os
@@ -8,7 +11,6 @@ from fpdf import FPDF
 
 
 class ProfessorReport(FPDF):
-    """Custom PDF with header/footer."""
 
     def header(self):
         self.set_font('Helvetica', 'B', 10)
@@ -77,6 +79,15 @@ class ProfessorReport(FPDF):
         self.multi_cell(170, 5.5, text)
         self.ln(0.5)
 
+    def ref_entry(self, text):
+        """Single APA reference with hanging indent."""
+        self.set_font('Helvetica', '', 9.5)
+        self.set_text_color(30, 30, 30)
+        x0 = self.get_x()
+        self.set_x(x0 + 5)
+        self.multi_cell(175, 5, text)
+        self.ln(2)
+
     def add_image_safe(self, path, w=170):
         if os.path.exists(path):
             self.image(path, x=20, w=w)
@@ -90,10 +101,9 @@ def generate_pdf():
     pdf.alias_nb_pages()
     pdf.set_auto_page_break(auto=True, margin=20)
 
-    # ===== PAGE 1: Cover / Apology / Reference =====
+    # ===== PAGE 1: Cover =====
     pdf.add_page()
 
-    # Title
     pdf.set_font('Helvetica', 'B', 20)
     pdf.set_text_color(0, 51, 102)
     pdf.ln(10)
@@ -113,260 +123,257 @@ def generate_pdf():
     pdf.cell(0, 7, 'Date: February 2026', 0, 1, 'C')
     pdf.ln(10)
 
-    # --- Apology & Reference Correction ---
-    pdf.section_title('1. Reference Correction & Apology')
+    # ===== Section 1: Apology & Citation Correction =====
+    pdf.section_title('1. Apology & Reference Correction')
 
     pdf.body_text(
         'Dear Professor Florian,\n\n'
-        'I sincerely apologize for the errors in my submission. I acknowledge '
-        'the following issues that need to be corrected:'
+        'I sincerely apologize for the following errors in my submission:\n'
+        '- The code was missing from the appendix.\n'
+        '- The references did not adhere to IU citation guidelines (APA style).\n'
+        '- The citations were not properly used within the document text.\n'
+        '- Reference [12] contained incorrect author names and year.\n\n'
+        'I take full responsibility for these mistakes and have worked to correct them. '
+        'Below I provide the corrected references, the complete runnable code, and '
+        'all requested visualizations.'
     )
 
-    pdf.sub_title('1.1 Incorrect Citation')
-    pdf.body_text(
-        'In my document, I cited the following reference:'
-    )
+    pdf.sub_title('1.1 Correction for Reference [12]')
+    pdf.body_text('In my original submission, I cited:')
     pdf.italic_text(
-        '    Kim, T. A.; Kim, H. "Pedestrian detection using LiDAR point clouds." 2020.'
+        '    [12] T. A. W. Kim and H. Kim, "Pedestrian detection using LiDAR\n'
+        '    point clouds," Sensors, vol. 20, no. 16, pp. 1-19, 2020.'
     )
     pdf.body_text(
-        'After thorough research, I was unable to locate a publication with '
-        'this exact title and these authors from 2020. The correct reference '
-        'I intended to cite is the following paper, which was published in 2019, '
-        'not 2020 as I mistakenly wrote:'
+        'After thorough research, I was unable to locate this exact publication in '
+        'the Sensors journal (vol. 20, no. 16, 2020) with these authors. '
+        'I sincerely apologize for this incorrect citation. '
+        'The reference I intended to use is:'
     )
-    pdf.bold_text(
-        'Correct Reference:'
+    pdf.bold_text('Corrected Reference:')
+    pdf.body_text(
+        'Liu, K., Wang, W., & Wang, J. (2019). Pedestrian detection with lidar '
+        'point clouds based on single template matching. Electronics, 8(7), 780. '
+        'https://doi.org/10.3390/electronics8070780'
     )
     pdf.body_text(
-        'Liu, K.; Wang, W.; Wang, J. "Pedestrian Detection with Lidar Point Clouds '
-        'Based on Single Template Matching." Electronics 2019, 8(7), 780.'
-    )
-    pdf.body_text(
-        'DOI: https://doi.org/10.3390/electronics8070780'
-    )
-    pdf.body_text(
-        'Available at: https://www.mdpi.com/2079-9292/8/7/780'
-    )
-    pdf.body_text(
-        'I apologize for the wrong year (2019, not 2020) and the incorrect author names. '
-        'I also sincerely apologize that the citations in my document did not adhere to '
-        'the IU citation guidelines. I will ensure all references are properly formatted '
-        'according to the required standards in any future submissions.'
+        'I apologize for the wrong year (2019, not 2020), the incorrect author names, '
+        'and the wrong journal. The paper is freely available at:\n'
+        'https://www.mdpi.com/2079-9292/8/7/780'
     )
 
-    pdf.sub_title('1.2 Relevance to This Project')
-    pdf.body_text(
-        'The Liu et al. (2019) paper is relevant to this project because both works '
-        'address pedestrian detection from LiDAR point clouds. Specifically:\n'
-        '- Both use point cloud clustering to segment objects from the LiDAR scan.\n'
-        '- Both implement pedestrian detection based on geometric features.\n'
-        '- Liu et al. use KDE clustering + template matching, while this project '
-        'uses DBSCAN clustering + rule-based classification with bounding box dimensions.\n'
-        '- This project extends beyond pedestrian detection by also detecting vehicles '
-        'and implementing multi-object tracking using Kalman filters.'
-    )
-
-    # ===== PAGE 2+: How to Run the Code =====
+    # ===== Section 2: All References in IU/APA Format =====
     pdf.add_page()
-    pdf.section_title('2. How to Run the Code')
-
-    pdf.sub_title('2.1 Prerequisites')
-    pdf.body_text('Python 3.8 or higher is required. All code has been tested with Python 3.12.')
-
-    pdf.sub_title('2.2 Installation (Step 1)')
-    pdf.body_text('Install the required Python packages:')
-    pdf.code_block('pip install -r requirements.txt')
+    pdf.section_title('2. References (IU/APA Format)')
 
     pdf.body_text(
-        'This installs: numpy, pandas, open3d, scikit-learn, filterpy, scipy, matplotlib, tqdm.'
+        'Below are all references from my submission, reformatted according to '
+        'IU Internationale Hochschule citation guidelines (APA style). '
+        'Reference [12] has been corrected as described above.'
+    )
+    pdf.ln(2)
+
+    references = [
+        (
+            'Thrun, S., Burgard, W., & Fox, D. (2005). Probabilistic robotics. '
+            'MIT Press.'
+        ),
+        (
+            'Urmson, C., Anhalt, J., Bagnell, D., Baker, C., Bittner, R., '
+            'Clark, M. N., Dolan, J., Duggins, D., Galatali, T., Geyer, C., '
+            'Gittleman, M., Harbaugh, S., Hebert, M., Howard, T. M., Kolski, S., '
+            'Kelly, A., Likhachev, M., McNaughton, M., Miller, N., ... '
+            'Ferguson, D. (2008). Autonomous driving in urban environments: Boss '
+            'and the Urban Challenge. Journal of Field Robotics, 25(8), 425-466. '
+            'https://doi.org/10.1002/rob.20255'
+        ),
+        (
+            'Levinson, J., Askeland, J., Becker, J., Dolson, J., Held, D., '
+            'Kammel, S., Kolter, J. Z., Langer, D., Pink, O., Pratt, V., '
+            'Sokolsky, M., Stanek, G., Stavens, D., Teichman, A., Werling, M., '
+            '& Thrun, S. (2011). Towards fully autonomous driving: Systems and '
+            'algorithms. In Proceedings of the IEEE Intelligent Vehicles Symposium '
+            '(IV) (pp. 163-168). IEEE. https://doi.org/10.1109/IVS.2011.5940562'
+        ),
+        (
+            'Geiger, A., Lenz, P., & Urtasun, R. (2012). Are we ready for '
+            'autonomous driving? The KITTI vision benchmark suite. In Proceedings '
+            'of the IEEE Conference on Computer Vision and Pattern Recognition '
+            '(CVPR) (pp. 3354-3361). IEEE. '
+            'https://doi.org/10.1109/CVPR.2012.6248074'
+        ),
+        (
+            'Cho, H., Seo, Y.-W., Kumar, B. V., & Rajkumar, R. R. (2014). '
+            'A multi-sensor fusion system for moving object detection and tracking '
+            'in urban driving environments. In Proceedings of the IEEE International '
+            'Conference on Robotics and Automation (ICRA) (pp. 1836-1843). IEEE. '
+            'https://doi.org/10.1109/ICRA.2014.6907100'
+        ),
+        (
+            'Zhang, J., & Singh, S. (2014). LOAM: Lidar odometry and mapping '
+            'in real-time. In Proceedings of Robotics: Science and Systems (RSS). '
+            'https://doi.org/10.15607/RSS.2014.X.007'
+        ),
+        (
+            'International Organization for Standardization. (2018). '
+            'ISO 26262: Road vehicles - Functional safety. ISO.'
+        ),
+        (
+            'Pomerleau, F., Colas, F., Siegwart, R., & Magnenat, S. (2013). '
+            'Comparing ICP variants on real-world data sets. Autonomous Robots, '
+            '34(3), 133-148. https://doi.org/10.1007/s10514-013-9327-2'
+        ),
+        (
+            'Rusu, R. B., & Cousins, S. (2011). 3D is here: Point Cloud Library '
+            '(PCL). In Proceedings of the IEEE International Conference on Robotics '
+            'and Automation (ICRA) (pp. 1-4). IEEE. '
+            'https://doi.org/10.1109/ICRA.2011.5980567'
+        ),
+        (
+            'Zhou, Q.-Y., Park, J., & Koltun, V. (2018). Open3D: A modern library '
+            'for 3D data processing. arXiv preprint arXiv:1801.09847. '
+            'https://doi.org/10.48550/arXiv.1801.09847'
+        ),
+        (
+            'Razakarivony, S., & Jurie, F. (2016). Vehicle detection in aerial '
+            'imagery: A small target detection benchmark. Journal of Visual '
+            'Communication and Image Representation, 34, 187-203. '
+            'https://doi.org/10.1016/j.jvcir.2015.11.002'
+        ),
+        (
+            'Liu, K., Wang, W., & Wang, J. (2019). Pedestrian detection with lidar '
+            'point clouds based on single template matching. Electronics, 8(7), 780. '
+            'https://doi.org/10.3390/electronics8070780\n'
+            '[CORRECTED: Originally cited as Kim, T. A. W. & Kim, H. (2020). '
+            'The correct authors are Liu, K. et al. and the year is 2019, not 2020.]'
+        ),
+    ]
+
+    for i, ref in enumerate(references, 1):
+        pdf.set_font('Helvetica', 'B', 9.5)
+        pdf.set_text_color(0, 51, 102)
+        pdf.cell(10, 5, f'[{i}]', 0, 0)
+        pdf.set_font('Helvetica', '', 9.5)
+        pdf.set_text_color(30, 30, 30)
+        pdf.multi_cell(170, 5, ref)
+        pdf.ln(2)
+
+    # ===== Section 3: How to Run =====
+    pdf.add_page()
+    pdf.section_title('3. How to Run the Code')
+
+    pdf.sub_title('3.1 Prerequisites')
+    pdf.body_text('Python 3.8 or higher is required. Tested with Python 3.12.')
+
+    pdf.sub_title('3.2 Installation (Step 1)')
+    pdf.body_text('Install required Python packages:')
+    pdf.code_block('pip install -r requirements.txt')
+    pdf.body_text(
+        'This installs: numpy, pandas, open3d, scikit-learn, filterpy, '
+        'scipy, matplotlib, tqdm.'
     )
 
-    pdf.sub_title('2.3 Run the Demo (Step 2)')
+    pdf.sub_title('3.3 Run the Demo (Step 2)')
     pdf.body_text(
-        'The main demo script is demo_run.py. It processes the LiDAR CSV files and generates '
-        'all visualizations (bounding boxes, trajectories, summary statistics):'
+        'The main demo script is demo_run.py. It processes the CSV files and '
+        'generates all visualizations:'
     )
     pdf.code_block('python demo_run.py')
 
     pdf.body_text('This will:')
     pdf.bullet('Load all 51 CSV frames from the lidar_data/ directory')
     pdf.bullet('Run the full detection and tracking pipeline on each frame')
-    pdf.bullet('Save bounding box plots, trajectory plots, and summary to demo_output/')
+    pdf.bullet(
+        'Save bounding box plots, trajectory plots, and summary to demo_output/'
+    )
 
-    pdf.sub_title('2.4 Custom Options')
+    pdf.sub_title('3.4 Custom Options')
     pdf.code_block(
         'python demo_run.py --data lidar_data --frames 51 --output demo_output\n'
         '\n'
         'Options:\n'
-        '  --data  / -d   Path to CSV directory     (default: lidar_data)\n'
-        '  --frames / -n  Number of frames to process (default: 51 = all)\n'
+        '  --data  / -d   Path to CSV directory      (default: lidar_data)\n'
+        '  --frames / -n  Number of frames to process (default: 51)\n'
         '  --output / -o  Output directory for plots  (default: demo_output)'
     )
 
-    pdf.sub_title('2.5 Alternative: Run the Main Pipeline')
-    pdf.body_text('The main_pipeline.py script can also be used:')
+    pdf.sub_title('3.5 GitHub Repository')
+    pdf.body_text('Complete code is available at:')
+    pdf.bold_text('https://github.com/abhisek777/new-model')
     pdf.code_block(
-        'python main_pipeline.py --data lidar_data --frames 10 --output output_dir'
+        'git clone https://github.com/abhisek777/new-model.git\n'
+        'cd new-model\n'
+        'pip install -r requirements.txt\n'
+        'python demo_run.py'
     )
 
-    # ===== Output Description =====
+    # ===== Section 4: Output Description =====
     pdf.add_page()
-    pdf.section_title('3. Output Description')
+    pdf.section_title('4. Output & Visualizations')
 
+    pdf.sub_title('4.1 Bounding Box Detection Plots')
     pdf.body_text(
-        'After running "python demo_run.py", the following files are generated '
-        'in the demo_output/ directory:'
+        'Each plot shows two panels:\n'
+        '- Left: Detected objects with bounding boxes (Bird\'s Eye View). '
+        'Each cluster is labeled with its class (Vehicle/Pedestrian/Unknown) '
+        'and dimensions.\n'
+        '- Right: Tracked objects with IDs, velocity arrows, and trajectory tails.'
     )
+    pdf.add_image_safe(os.path.join('demo_output', 'detections_frame_008.png'), w=175)
 
-    pdf.sub_title('3.1 Bounding Box Detection Plots')
+    pdf.sub_title('4.2 Object Trajectories')
     pdf.body_text(
-        'Files: detections_frame_000.png, detections_frame_008.png, etc.\n\n'
-        'Each plot shows two panels side by side:\n'
-        '- Left panel: Detected objects with bounding boxes (Bird\'s Eye View). '
-        'Each cluster is shown with its class label (Vehicle/Pedestrian/Unknown) '
-        'and bounding box dimensions.\n'
-        '- Right panel: Tracked objects with IDs, velocity arrows, and trajectory tails. '
-        'Shows consistent object IDs across frames.'
+        'Full movement paths of all tracked objects across 51 frames. '
+        'Red = vehicles, green = pedestrians. '
+        'Circles = start, squares = end position.'
     )
-
-    img_path = os.path.join('demo_output', 'detections_frame_008.png')
-    pdf.add_image_safe(img_path, w=175)
-
-    pdf.sub_title('3.2 Object Trajectories')
-    pdf.body_text(
-        'File: object_trajectories.png\n\n'
-        'Shows the complete movement paths of all tracked objects across all 51 frames. '
-        'Vehicles are shown in red, pedestrians in green. Circle markers indicate the '
-        'start position, square markers indicate the end position. Each trajectory '
-        'is labeled with its unique track ID.'
+    pdf.add_image_safe(
+        os.path.join('demo_output', 'object_trajectories.png'), w=150
     )
-
-    pdf.add_image_safe(os.path.join('demo_output', 'object_trajectories.png'), w=150)
 
     pdf.add_page()
-    pdf.sub_title('3.3 Pipeline Summary Statistics')
+    pdf.sub_title('4.3 Pipeline Summary Statistics')
     pdf.body_text(
-        'File: pipeline_summary.png\n\n'
-        'A 4-panel summary showing:\n'
-        '(a) Detections per frame by class (Vehicle, Pedestrian, Unknown)\n'
-        '(b) Number of active tracks over time\n'
-        '(c) Processing time per frame in milliseconds\n'
-        '(d) Distribution of track durations (how long each object was tracked)'
+        '(a) Detections per frame by class\n'
+        '(b) Active tracks over time\n'
+        '(c) Processing time per frame\n'
+        '(d) Track duration distribution'
+    )
+    pdf.add_image_safe(
+        os.path.join('demo_output', 'pipeline_summary.png'), w=170
     )
 
-    pdf.add_image_safe(os.path.join('demo_output', 'pipeline_summary.png'), w=170)
-
-    # ===== Pipeline Architecture =====
-    pdf.add_page()
-    pdf.section_title('4. Pipeline Architecture')
-
-    pdf.body_text(
-        'The complete perception pipeline processes raw LiDAR point clouds through '
-        'six stages to produce tracked object outputs:'
-    )
-
+    # ===== Section 5: Pipeline Architecture =====
+    pdf.section_title('5. Pipeline Architecture')
     pdf.code_block(
         'CSV File (Blickfeld Cube 1)\n'
         '         |\n'
         '         v\n'
         '[1] Data Loading           (data_loader.py)\n'
-        '    Reads semicolon-separated CSV files\n'
-        '    Columns: X; Y; Z; DISTANCE; INTENSITY; TIMESTAMP\n'
+        '    Reads semicolon-separated CSV: X;Y;Z;DISTANCE;INTENSITY;TIMESTAMP\n'
         '         |\n'
         '         v\n'
         '[2] Preprocessing          (preprocessing.py)\n'
-        '    - Range filtering (5 - 250 m)\n'
-        '    - Voxel grid downsampling (0.1 m)\n'
-        '    - RANSAC ground plane removal\n'
-        '    - Statistical outlier removal\n'
+        '    Range filtering (5-250 m), Voxel downsampling (0.1 m)\n'
+        '    RANSAC ground removal, Outlier removal\n'
         '         |\n'
         '         v\n'
         '[3] Clustering (DBSCAN)    (clustering.py)\n'
-        '    eps = 0.5 m, min_samples = 10\n'
-        '    Groups nearby points into object clusters\n'
+        '    eps=0.5 m, min_samples=10\n'
         '         |\n'
         '         v\n'
-        '[4] Feature Extraction     (classification.py)\n'
-        '    3D bounding box, dimensions, point density\n'
+        '[4] Feature Extraction &   (classification.py)\n'
+        '    Classification         VEHICLE / PEDESTRIAN / UNKNOWN\n'
         '         |\n'
         '         v\n'
-        '[5] Classification         (classification.py)\n'
-        '    Rule-based: VEHICLE / PEDESTRIAN / UNKNOWN\n'
-        '    Based on bounding box dimensions\n'
-        '         |\n'
-        '         v\n'
-        '[6] Multi-Object Tracking  (tracking.py)\n'
-        '    Kalman Filter state estimation\n'
-        '    Hungarian algorithm for data association\n'
-        '    Consistent object IDs across frames'
+        '[5] Multi-Object Tracking  (tracking.py)\n'
+        '    Kalman Filter + Hungarian algorithm'
     )
 
-    pdf.sub_title('4.1 Classification Rules')
-    pdf.body_text(
-        'Objects are classified based on their 3D bounding box dimensions:'
-    )
-
-    # Simple table
-    pdf.set_font('Courier', 'B', 9)
-    pdf.set_fill_color(220, 230, 240)
-    pdf.cell(40, 6, ' Class', 1, 0, 'L', fill=True)
-    pdf.cell(35, 6, ' Length (m)', 1, 0, 'C', fill=True)
-    pdf.cell(35, 6, ' Width (m)', 1, 0, 'C', fill=True)
-    pdf.cell(35, 6, ' Height (m)', 1, 0, 'C', fill=True)
-    pdf.cell(35, 6, ' Volume', 1, 1, 'C', fill=True)
-
-    pdf.set_font('Courier', '', 9)
-    pdf.set_fill_color(255, 255, 255)
-    pdf.cell(40, 6, ' VEHICLE', 1, 0, 'L')
-    pdf.cell(35, 6, '2.0 - 8.0', 1, 0, 'C')
-    pdf.cell(35, 6, '1.3 - 3.0', 1, 0, 'C')
-    pdf.cell(35, 6, '1.0 - 3.5', 1, 0, 'C')
-    pdf.cell(35, 6, '>= 3.0 m3', 1, 1, 'C')
-
-    pdf.cell(40, 6, ' PEDESTRIAN', 1, 0, 'L')
-    pdf.cell(35, 6, '0.2 - 1.2', 1, 0, 'C')
-    pdf.cell(35, 6, '0.2 - 1.2', 1, 0, 'C')
-    pdf.cell(35, 6, '1.2 - 2.2', 1, 0, 'C')
-    pdf.cell(35, 6, '<= 2.0 m3', 1, 1, 'C')
-    pdf.ln(4)
-
-    # ===== File Structure =====
-    pdf.sub_title('4.2 Project File Structure')
-    pdf.code_block(
-        'project/\n'
-        '  demo_run.py              <-- MAIN: run this script\n'
-        '  main_pipeline.py         Integrated pipeline class\n'
-        '  run_complete_pipeline.py Extended pipeline with validation\n'
-        '  \n'
-        '  data_loader.py           Blickfeld CSV loading\n'
-        '  preprocessing.py         Point cloud preprocessing\n'
-        '  clustering.py            DBSCAN object segmentation\n'
-        '  classification.py        Rule-based classification\n'
-        '  tracking.py              Kalman filter tracking\n'
-        '  enhanced_tracking.py     Enhanced tracking (acceleration)\n'
-        '  \n'
-        '  visualization.py         BEV and 3D visualization\n'
-        '  enhanced_visualization.py Extended visualization\n'
-        '  academic_visualizations.py Academic figure generation\n'
-        '  semantic_visualization.py  Semantic 3D visualization\n'
-        '  \n'
-        '  requirements.txt         Python dependencies\n'
-        '  lidar_data/              51 Blickfeld Cube 1 CSV frames\n'
-        '  demo_output/             Generated output plots\n'
-        '  academic_figures/        Academic paper figures'
-    )
-
-    # ===== Results Summary =====
+    # ===== Section 6: Results =====
     pdf.add_page()
-    pdf.section_title('5. Results Summary')
+    pdf.section_title('6. Results Summary')
 
-    pdf.body_text(
-        'The pipeline was executed on all 51 LiDAR frames from the Blickfeld Cube 1 sensor. '
-        'The following results were obtained:'
-    )
-
-    # Results table
     pdf.set_font('Courier', 'B', 9)
     pdf.set_fill_color(220, 230, 240)
     pdf.cell(100, 6, ' Metric', 1, 0, 'L', fill=True)
@@ -374,13 +381,13 @@ def generate_pdf():
 
     results = [
         ('Frames processed', '51'),
-        ('Average processing time', '87.1 ms/frame'),
+        ('Avg processing time', '87.1 ms/frame'),
         ('Estimated FPS', '11.5'),
         ('Total vehicle detections', '510'),
         ('Total pedestrian detections', '816'),
         ('Unique tracked objects', '72'),
         ('Points per frame (raw)', '~18,500'),
-        ('Points per frame (after preprocessing)', '~8,400'),
+        ('Points per frame (preprocessed)', '~8,400'),
         ('Clusters per frame', '50 - 60'),
         ('Active tracks per frame', '55 - 62'),
     ]
@@ -389,19 +396,16 @@ def generate_pdf():
     for metric, value in results:
         pdf.cell(100, 6, f' {metric}', 1, 0, 'L')
         pdf.cell(80, 6, value, 1, 1, 'C')
+    pdf.ln(4)
 
-    pdf.ln(6)
     pdf.body_text(
-        'The pipeline achieves real-time performance at approximately 11.5 FPS, '
-        'which is suitable for autonomous driving perception tasks. The Kalman filter '
-        'tracker successfully maintains consistent object IDs across frames, and the '
-        'rule-based classifier correctly identifies vehicles and pedestrians based on '
-        'their bounding box dimensions.'
+        'The pipeline achieves real-time performance at ~11.5 FPS. '
+        'The Kalman filter tracker maintains consistent object IDs across frames.'
     )
 
-    # ===== Additional Detection Frames =====
+    # ===== Section 7: Additional Frames =====
     pdf.add_page()
-    pdf.section_title('6. Additional Detection & Tracking Frames')
+    pdf.section_title('7. Additional Detection Frames')
 
     for frame_file in ['detections_frame_000.png', 'detections_frame_024.png',
                         'detections_frame_050.png']:
@@ -412,41 +416,51 @@ def generate_pdf():
             pdf.add_image_safe(path, w=175)
             pdf.ln(2)
 
-    # ===== GitHub Repository =====
+    # ===== Section 8: File Structure =====
     pdf.add_page()
-    pdf.section_title('7. Code Repository')
+    pdf.section_title('8. Project File Structure')
 
-    pdf.body_text(
-        'The complete source code, data, and pre-generated output are available at:'
-    )
-    pdf.bold_text(
-        'https://github.com/abhisek777/new-model'
-    )
-    pdf.body_text(
-        'To clone and run:'
-    )
     pdf.code_block(
-        'git clone https://github.com/abhisek777/new-model.git\n'
-        'cd new-model\n'
-        'pip install -r requirements.txt\n'
-        'python demo_run.py'
+        'project/\n'
+        '  demo_run.py              <-- MAIN: run this\n'
+        '  main_pipeline.py         Integrated pipeline\n'
+        '  run_complete_pipeline.py Extended pipeline + validation\n'
+        '  \n'
+        '  data_loader.py           Blickfeld CSV loading\n'
+        '  preprocessing.py         Point cloud preprocessing\n'
+        '  clustering.py            DBSCAN segmentation\n'
+        '  classification.py        Rule-based classification\n'
+        '  tracking.py              Kalman filter tracking\n'
+        '  enhanced_tracking.py     Enhanced tracking\n'
+        '  \n'
+        '  visualization.py         BEV and 3D visualization\n'
+        '  enhanced_visualization.py Extended visualization\n'
+        '  academic_visualizations.py Academic figures\n'
+        '  semantic_visualization.py  Semantic visualization\n'
+        '  \n'
+        '  requirements.txt         Python dependencies\n'
+        '  lidar_data/              51 CSV frames (Blickfeld Cube 1)\n'
+        '  demo_output/             Generated output plots'
     )
 
-    # ===== Final Note =====
-    pdf.ln(6)
-    pdf.section_title('8. Closing Note')
+    # ===== Section 9: Closing =====
+    pdf.section_title('9. Closing Note')
     pdf.body_text(
         'Dear Professor Florian,\n\n'
-        'I sincerely apologize for the missing code appendix, the incorrect citation, '
-        'and for not adhering to the IU citation guidelines in my original submission. '
-        'I understand these are serious issues and I take full responsibility.\n\n'
+        'I sincerely apologize for:\n'
+        '- The missing code appendix in my original submission\n'
+        '- The incorrect citation [12] (wrong authors, wrong year, wrong journal)\n'
+        '- Not following IU citation guidelines (APA style)\n'
+        '- Not using in-text citations in the document body\n\n'
         'I have now provided:\n'
-        '1. The complete, runnable Python code with clear instructions.\n'
-        '2. A demo script (demo_run.py) that can be directly applied to the CSV files.\n'
-        '3. Visualizations of object trajectories and bounding box detections.\n'
-        '4. The corrected reference (Liu et al. 2019, not Kim et al. 2020).\n\n'
-        'I hope this addresses your concerns. Please do not hesitate to reach out if '
-        'you need any further clarification or if there are additional issues to resolve.\n\n'
+        '1. Complete, runnable Python code with clear instructions\n'
+        '2. A demo script (demo_run.py) directly applicable to the CSV files\n'
+        '3. Bounding box detection plots and object trajectory visualizations\n'
+        '4. All references corrected and reformatted to IU/APA style\n'
+        '5. The corrected reference: Liu et al. (2019), not Kim et al. (2020)\n'
+        '   Available at: https://www.mdpi.com/2079-9292/8/7/780\n\n'
+        'I understand these are serious issues and I take full responsibility. '
+        'Please do not hesitate to contact me if anything further is needed.\n\n'
         'Kind regards,\n'
         'Abhisek Maddi'
     )
