@@ -3,17 +3,34 @@ LiDAR Feature Extraction and Classification Module
 ==================================================
 Autonomous Driving Perception Pipeline - Object Classification
 
-This module implements:
-1. Feature extraction from clustered point clouds
-2. Rule-based classification into Vehicle and Pedestrian classes
+Implements rule-based geometric classification into:
+  VEHICLE         -- cars / vans / trucks
+  PEDESTRIAN      -- people on foot
+  STATIC_STRUCTURE -- walls, buildings, infrastructure (too large/flat to be dynamic)
+  UNKNOWN         -- objects that cannot be confidently assigned
 
-Classification is based on geometric features:
-- Bounding box dimensions (length, width, height)
-- Point density
-- Shape ratios
+Classification thresholds (documented explicitly for the report):
+  Vehicle:
+    length  : 2.0 -- 8.0  m
+    width   : 1.3 -- 3.0  m
+    height  : 1.0 -- 3.5  m
+    footprint (L*W) <= 18 m²  (filter out walls that fit L/W ranges)
+    height  <= 4.0 m          (buildings are taller)
+    aspect  L/W   <= 5.0      (walls have very high L/W)
 
-Author: Perception Engineer
-Course: Localization, Motion Planning and Sensor Fusion
+  Pedestrian:
+    length  : 0.2 -- 1.2  m
+    width   : 0.2 -- 1.2  m
+    height  : 1.2 -- 2.2  m
+    H/W     >= 1.5           (taller than wide)
+
+  Static Structure (explicitly labelled, not silently dropped):
+    footprint > 18 m²  OR
+    height    > 4.0  m  OR
+    L/W       > 6.0  (wall-like elongated shape)
+
+Course: DLMDSEAAD02 -- Localization, Motion Planning and Sensor Fusion
+Author: Kalpana Abhiseka Maddi
 """
 
 import numpy as np
@@ -21,171 +38,101 @@ from typing import List, Dict, Tuple, Optional
 from dataclasses import dataclass
 
 
+# ── Data classes ──────────────────────────────────────────────────────────────
+
 @dataclass
 class BoundingBox3D:
-    """
-    3D Axis-Aligned Bounding Box (AABB) for a cluster.
-
-    Represents the smallest box aligned with coordinate axes
-    that contains all points in the cluster.
-    """
-    min_point: np.ndarray  # [x_min, y_min, z_min]
-    max_point: np.ndarray  # [x_max, y_max, z_max]
-    center: np.ndarray     # [x_center, y_center, z_center]
-    length: float          # X dimension (forward/back)
-    width: float           # Y dimension (left/right)
-    height: float          # Z dimension (up/down)
-    volume: float          # Bounding box volume
+    """3-D axis-aligned bounding box (AABB)."""
+    min_point: np.ndarray   # [x_min, y_min, z_min]
+    max_point: np.ndarray   # [x_max, y_max, z_max]
+    center:    np.ndarray   # [x_c,   y_c,   z_c  ]
+    length:    float        # X extent (forward / back)
+    width:     float        # Y extent (left  / right)
+    height:    float        # Z extent (up    / down)
+    volume:    float        # L * W * H
 
 
 @dataclass
 class ObjectFeatures:
-    """
-    Container for all extracted features of a detected object.
+    """All geometric and statistical features for one detected cluster."""
+    cluster_id:   int
+    num_points:   int
 
-    Used for classification and tracking.
-    """
-    cluster_id: int
-    num_points: int
-
-    # Bounding box
     bounding_box: BoundingBox3D
-    center: np.ndarray
-    length: float
-    width: float
-    height: float
-    volume: float
+    center:       np.ndarray
+    length:       float
+    width:        float
+    height:       float
+    volume:       float
 
-    # Position relative to sensor
     distance_from_sensor: float
+    point_density:        float   # pts / m³
 
-    # Density features
-    point_density: float  # points per cubic meter
+    aspect_ratio_lw:  float   # length / width
+    aspect_ratio_lh:  float   # length / height
+    aspect_ratio_hw:  float   # height / width
 
-    # Shape features
-    aspect_ratio_lw: float  # length / width
-    aspect_ratio_lh: float  # length / height
-    aspect_ratio_hw: float  # height / width
+    mean_intensity:   float
+    std_intensity:    float
+    min_z:            float
+    max_z:            float
 
-    # Intensity features
-    mean_intensity: float
-    std_intensity: float
-
-    # Ground plane features
-    min_z: float
-    max_z: float
-
-    # Classification result (set after classification)
     classification: Optional[str] = None
-    confidence: float = 0.0
+    confidence:     float          = 0.0
 
+
+# ── Feature extractor ─────────────────────────────────────────────────────────
 
 class FeatureExtractor:
-    """
-    Extracts geometric and statistical features from point cloud clusters.
-    """
+    """Extracts 3-D geometric and statistical features from point cloud clusters."""
 
-    def __init__(self):
-        """Initialize the feature extractor."""
-        pass
-
-    def extract_features(self, points: np.ndarray,
-                        cluster_labels: np.ndarray,
-                        verbose: bool = True) -> List[ObjectFeatures]:
+    def extract_features(self,
+                         points:         np.ndarray,
+                         cluster_labels: np.ndarray,
+                         verbose:        bool = True) -> List[ObjectFeatures]:
         """
         Extract features from all clusters.
 
         Args:
-            points: Point cloud (N, 4) [X, Y, Z, INTENSITY]
-            cluster_labels: Cluster label for each point (-1 = noise)
-            verbose: Print progress information
+            points:         Pre-processed cloud (N, 4) [X, Y, Z, INTENSITY]
+            cluster_labels: Per-point cluster id; -1 == noise
+            verbose:        Print summary table
 
         Returns:
-            List of ObjectFeatures for each cluster
+            List of ObjectFeatures, one per cluster
         """
-        if verbose:
-            print("\n" + "="*60)
-            print("FEATURE EXTRACTION")
-            print("="*60)
-
-        # Get unique cluster IDs (exclude noise)
-        unique_labels = np.unique(cluster_labels)
-        cluster_ids = unique_labels[unique_labels != -1]
+        unique = np.unique(cluster_labels)
+        cluster_ids = unique[unique != -1]
 
         if verbose:
-            print(f"\nExtracting features from {len(cluster_ids)} clusters...\n")
+            print(f"\n[Feature Extraction] {len(cluster_ids)} clusters found")
 
         features_list = []
-
-        for cluster_id in cluster_ids:
-            # Get points for this cluster
-            mask = cluster_labels == cluster_id
-            cluster_points = points[mask]
-
-            # Extract features
-            features = self._extract_single_cluster(cluster_id, cluster_points)
-            features_list.append(features)
-
-            if verbose:
-                print(f"  Cluster {cluster_id:3d}: {features.num_points:4d} pts | "
-                      f"L={features.length:5.2f}m W={features.width:5.2f}m H={features.height:5.2f}m | "
-                      f"Dist={features.distance_from_sensor:5.1f}m")
-
-        if verbose:
-            print("\n" + "="*60 + "\n")
+        for cid in cluster_ids:
+            mask    = cluster_labels == cid
+            pts_c   = points[mask]
+            feat    = self._extract_single(cid, pts_c)
+            features_list.append(feat)
 
         return features_list
 
-    def _extract_single_cluster(self, cluster_id: int,
-                               points: np.ndarray) -> ObjectFeatures:
-        """
-        Extract features from a single cluster.
-
-        Args:
-            cluster_id: Cluster identifier
-            points: Points in the cluster (N, 4)
-
-        Returns:
-            ObjectFeatures for this cluster
-        """
-        xyz = points[:, :3]
+    # ------------------------------------------------------------------
+    def _extract_single(self, cluster_id: int,
+                        points: np.ndarray) -> ObjectFeatures:
+        xyz       = points[:, :3]
         intensity = points[:, 3] if points.shape[1] >= 4 else np.ones(len(points)) * 0.5
 
-        # Compute bounding box
-        min_point = np.min(xyz, axis=0)
-        max_point = np.max(xyz, axis=0)
-        center = (min_point + max_point) / 2.0
+        min_pt  = np.min(xyz, axis=0)
+        max_pt  = np.max(xyz, axis=0)
+        center  = (min_pt + max_pt) / 2.0
+        dims    = max_pt - min_pt
+        length  = max(float(dims[0]), 0.01)
+        width   = max(float(dims[1]), 0.01)
+        height  = max(float(dims[2]), 0.01)
+        volume  = length * width * height
 
-        dimensions = max_point - min_point
-        length = max(dimensions[0], 0.01)  # X (forward)
-        width = max(dimensions[1], 0.01)   # Y (lateral)
-        height = max(dimensions[2], 0.01)  # Z (vertical)
-        volume = length * width * height
-
-        bbox = BoundingBox3D(
-            min_point=min_point,
-            max_point=max_point,
-            center=center,
-            length=length,
-            width=width,
-            height=height,
-            volume=volume
-        )
-
-        # Distance from sensor (assumed at origin)
-        distance_from_sensor = np.linalg.norm(center)
-
-        # Point density
-        point_density = len(points) / max(volume, 0.001)
-
-        # Shape aspect ratios
-        aspect_ratio_lw = length / max(width, 0.01)
-        aspect_ratio_lh = length / max(height, 0.01)
-        aspect_ratio_hw = height / max(width, 0.01)
-
-        # Intensity statistics
-        mean_intensity = np.mean(intensity)
-        std_intensity = np.std(intensity)
+        bbox = BoundingBox3D(min_point=min_pt, max_point=max_pt, center=center,
+                             length=length, width=width, height=height, volume=volume)
 
         return ObjectFeatures(
             cluster_id=cluster_id,
@@ -196,255 +143,157 @@ class FeatureExtractor:
             width=width,
             height=height,
             volume=volume,
-            distance_from_sensor=distance_from_sensor,
-            point_density=point_density,
-            aspect_ratio_lw=aspect_ratio_lw,
-            aspect_ratio_lh=aspect_ratio_lh,
-            aspect_ratio_hw=aspect_ratio_hw,
-            mean_intensity=mean_intensity,
-            std_intensity=std_intensity,
-            min_z=min_point[2],
-            max_z=max_point[2]
+            distance_from_sensor=float(np.linalg.norm(center)),
+            point_density=len(points) / max(volume, 0.001),
+            aspect_ratio_lw=length / max(width,  0.01),
+            aspect_ratio_lh=length / max(height, 0.01),
+            aspect_ratio_hw=height / max(width,  0.01),
+            mean_intensity=float(np.mean(intensity)),
+            std_intensity=float(np.std(intensity)),
+            min_z=float(min_pt[2]),
+            max_z=float(max_pt[2]),
         )
 
 
+# ── Rule-based classifier ─────────────────────────────────────────────────────
+
 class RuleBasedClassifier:
     """
-    Rule-based classifier for LiDAR objects.
+    Conservative rule-based classifier using 3-D bounding box geometry.
 
-    Classifies objects into:
-    - VEHICLE: Cars, trucks, buses (larger objects)
-    - PEDESTRIAN: People (smaller, taller objects)
-
-    Classification Logic:
-    ---------------------
-    VEHICLE characteristics:
-    - Length: 3.5m - 7.0m (compact car to truck)
-    - Width: 1.5m - 2.5m (standard vehicle width)
-    - Height: 1.2m - 3.0m (car to bus)
-    - Shape: Elongated (length > width)
-
-    PEDESTRIAN characteristics:
-    - Length: 0.3m - 1.0m
-    - Width: 0.3m - 1.0m
-    - Height: 1.4m - 2.0m
-    - Shape: Tall and narrow (height >> width)
+    Threshold values are documented explicitly so they can be discussed
+    and justified in the written report.
     """
 
-    # Classification thresholds
-    VEHICLE_MIN_LENGTH = 2.0
-    VEHICLE_MAX_LENGTH = 8.0
-    VEHICLE_MIN_WIDTH = 1.3
-    VEHICLE_MAX_WIDTH = 3.0
-    VEHICLE_MIN_HEIGHT = 1.0
-    VEHICLE_MAX_HEIGHT = 3.5
-    VEHICLE_MIN_VOLUME = 3.0
+    # ── Vehicle thresholds ───────────────────────────────────────────────────
+    VEH_MIN_L      = 2.0    # m
+    VEH_MAX_L      = 8.0    # m
+    VEH_MIN_W      = 1.3    # m
+    VEH_MAX_W      = 3.0    # m
+    VEH_MIN_H      = 1.0    # m
+    VEH_MAX_H      = 3.5    # m
+    VEH_MIN_VOL    = 3.0    # m³
+    VEH_MAX_FOOTPRINT = 18.0   # m²  (L*W > 18 is too large for a single vehicle)
+    VEH_MAX_ASPECT_LW = 5.0    # L/W > 5 => wall-like, not a car
+    VEH_MAX_H_HARD    = 4.0    # m  any object taller than 4 m is infrastructure
 
-    PEDESTRIAN_MIN_LENGTH = 0.2
-    PEDESTRIAN_MAX_LENGTH = 1.2
-    PEDESTRIAN_MIN_WIDTH = 0.2
-    PEDESTRIAN_MAX_WIDTH = 1.2
-    PEDESTRIAN_MIN_HEIGHT = 1.2
-    PEDESTRIAN_MAX_HEIGHT = 2.2
-    PEDESTRIAN_MAX_VOLUME = 2.0
+    # ── Pedestrian thresholds ────────────────────────────────────────────────
+    PED_MIN_L  = 0.2
+    PED_MAX_L  = 1.2
+    PED_MIN_W  = 0.2
+    PED_MAX_W  = 1.2
+    PED_MIN_H  = 1.2
+    PED_MAX_H  = 2.2
+    PED_MAX_VOL = 2.0
 
-    def __init__(self):
-        """Initialize the classifier."""
-        pass
+    # ── Static structure triggers ────────────────────────────────────────────
+    # If ANY of these conditions holds, classify as STATIC_STRUCTURE
+    STATIC_MIN_FOOTPRINT = 18.0   # m²
+    STATIC_MIN_HEIGHT    = 4.0    # m
+    STATIC_MIN_LW_RATIO  = 6.0    # very elongated = wall / fence
 
-    def classify(self, features_list: List[ObjectFeatures],
-                verbose: bool = True) -> Dict[int, str]:
+    def classify(self,
+                 features_list: List[ObjectFeatures],
+                 verbose:       bool = True) -> Dict[int, str]:
         """
         Classify all detected objects.
 
-        Args:
-            features_list: List of ObjectFeatures
-            verbose: Print progress information
-
         Returns:
-            Dictionary mapping cluster_id to classification label
+            Dict mapping cluster_id -> class label
         """
         if verbose:
-            print("\n" + "="*60)
-            print("RULE-BASED CLASSIFICATION")
-            print("="*60)
-            print("\n{:^8} | {:^6} | {:^18} | {:^12} | {:^10}".format(
-                "Cluster", "Points", "Dimensions (LxWxH)", "Class", "Confidence"
-            ))
-            print("-"*60)
+            print(f"\n[Classification] {len(features_list)} objects")
+            print(f"  Thresholds: Vehicle L=[{self.VEH_MIN_L},{self.VEH_MAX_L}]m "
+                  f"W=[{self.VEH_MIN_W},{self.VEH_MAX_W}]m H=[{self.VEH_MIN_H},{self.VEH_MAX_H}]m "
+                  f"footprint<={self.VEH_MAX_FOOTPRINT}m² L/W<={self.VEH_MAX_ASPECT_LW}")
+            print(f"  Thresholds: Pedestrian L=[{self.PED_MIN_L},{self.PED_MAX_L}]m "
+                  f"W=[{self.PED_MIN_W},{self.PED_MAX_W}]m H=[{self.PED_MIN_H},{self.PED_MAX_H}]m")
 
         classifications = {}
-        counts = {'VEHICLE': 0, 'PEDESTRIAN': 0, 'UNKNOWN': 0}
+        counts = {'VEHICLE': 0, 'PEDESTRIAN': 0, 'STATIC_STRUCTURE': 0, 'UNKNOWN': 0}
 
-        for features in features_list:
-            label, confidence = self._classify_single(features)
-
-            # Store result
-            features.classification = label
-            features.confidence = confidence
-            classifications[features.cluster_id] = label
+        for feat in features_list:
+            label, conf = self._classify_single(feat)
+            feat.classification = label
+            feat.confidence     = conf
+            classifications[feat.cluster_id] = label
             counts[label] += 1
 
-            if verbose:
-                dims_str = f"{features.length:.2f}x{features.width:.2f}x{features.height:.2f}"
-                print(f"{features.cluster_id:^8} | {features.num_points:^6} | "
-                      f"{dims_str:^18} | {label:^12} | {confidence:^10.1%}")
-
         if verbose:
-            print("-"*60)
-            print("\n--- Classification Summary ---")
-            print(f"  Total objects:  {len(features_list)}")
-            print(f"  Vehicles:       {counts['VEHICLE']}")
-            print(f"  Pedestrians:    {counts['PEDESTRIAN']}")
-            print(f"  Unknown:        {counts['UNKNOWN']}")
-            print("="*60 + "\n")
+            total = len(features_list)
+            print(f"  Vehicle={counts['VEHICLE']}  Pedestrian={counts['PEDESTRIAN']}  "
+                  f"Static={counts['STATIC_STRUCTURE']}  Unknown={counts['UNKNOWN']}  "
+                  f"(total={total})")
+            labeled = counts['VEHICLE'] + counts['PEDESTRIAN']
+            rate = labeled / max(total, 1)
+            print(f"  Labeled rate (V+P / total): {rate:.1%}  "
+                  f"[conservative design -- static/unknown suppresses false positives]")
 
         return classifications
 
-    def _classify_single(self, features: ObjectFeatures) -> Tuple[str, float]:
-        """
-        Classify a single object.
+    # ------------------------------------------------------------------
+    def _classify_single(self, f: ObjectFeatures) -> Tuple[str, float]:
+        """Classify one object. Returns (label, confidence)."""
+        L, W, H     = f.length, f.width, f.height
+        footprint   = L * W
+        lw_ratio    = L / max(W, 0.01)
 
-        Args:
-            features: ObjectFeatures for the object
+        # ── Step 1: Static structure pre-filter ──────────────────────────────
+        # These are definitive disqualifiers for dynamic objects.
+        if (footprint   >= self.STATIC_MIN_FOOTPRINT or
+                H       >= self.STATIC_MIN_HEIGHT    or
+                lw_ratio >= self.STATIC_MIN_LW_RATIO):
+            return 'STATIC_STRUCTURE', 0.85
 
-        Returns:
-            Tuple of (classification_label, confidence)
-        """
-        length = features.length
-        width = features.width
-        height = features.height
-        volume = features.volume
-        aspect_hw = features.aspect_ratio_hw
+        # ── Step 2: Vehicle check ────────────────────────────────────────────
+        if (self.VEH_MIN_L <= L <= self.VEH_MAX_L and
+                self.VEH_MIN_W <= W <= self.VEH_MAX_W and
+                self.VEH_MIN_H <= H <= self.VEH_MAX_H):
+            conf = self._vehicle_confidence(f)
+            return 'VEHICLE', conf
 
-        # Rule 1: Check for vehicle (large objects)
-        if (self.VEHICLE_MIN_LENGTH <= length <= self.VEHICLE_MAX_LENGTH and
-            self.VEHICLE_MIN_WIDTH <= width <= self.VEHICLE_MAX_WIDTH and
-            self.VEHICLE_MIN_HEIGHT <= height <= self.VEHICLE_MAX_HEIGHT):
-            # Confidence based on how well it fits typical vehicle dimensions
-            confidence = self._calculate_vehicle_confidence(features)
-            return 'VEHICLE', confidence
+        # Volume-based vehicle (e.g., partial occlusion hides one dimension)
+        if f.volume >= self.VEH_MIN_VOL and H >= 1.0 and footprint <= self.VEH_MAX_FOOTPRINT:
+            conf = min(0.75, f.volume / 20.0)
+            return 'VEHICLE', conf
 
-        # Rule 2: Volume-based vehicle detection
-        if volume >= self.VEHICLE_MIN_VOLUME and height >= 1.0:
-            confidence = min(0.8, volume / 20.0)
-            return 'VEHICLE', confidence
+        # ── Step 3: Pedestrian check ─────────────────────────────────────────
+        if (self.PED_MIN_L <= L <= self.PED_MAX_L and
+                self.PED_MIN_W <= W <= self.PED_MAX_W and
+                self.PED_MIN_H <= H <= self.PED_MAX_H):
+            hw = H / max(W, 0.01)
+            conf = min(0.90, 0.65 + hw * 0.05) if hw >= 1.5 else 0.60
+            return 'PEDESTRIAN', conf
 
-        # Rule 3: Check for pedestrian (tall, narrow objects)
-        if (self.PEDESTRIAN_MIN_LENGTH <= length <= self.PEDESTRIAN_MAX_LENGTH and
-            self.PEDESTRIAN_MIN_WIDTH <= width <= self.PEDESTRIAN_MAX_WIDTH and
-            self.PEDESTRIAN_MIN_HEIGHT <= height <= self.PEDESTRIAN_MAX_HEIGHT):
-            # Confidence based on aspect ratio (pedestrians are tall and narrow)
-            if aspect_hw >= 2.0:
-                confidence = min(0.95, 0.7 + aspect_hw * 0.05)
-            else:
-                confidence = 0.6
-            return 'PEDESTRIAN', confidence
+        # Aspect-ratio-based pedestrian
+        if f.aspect_ratio_hw >= 2.0 and H >= 1.2 and f.volume <= self.PED_MAX_VOL:
+            conf = min(0.80, 0.50 + f.aspect_ratio_hw * 0.08)
+            return 'PEDESTRIAN', conf
 
-        # Rule 4: Aspect ratio based pedestrian detection
-        if aspect_hw >= 2.5 and height >= 1.4 and volume <= self.PEDESTRIAN_MAX_VOLUME:
-            confidence = min(0.85, 0.5 + aspect_hw * 0.1)
-            return 'PEDESTRIAN', confidence
+        # ── Step 4: Catch-all unknown ─────────────────────────────────────────
+        return 'UNKNOWN', 0.40
 
-        # Rule 5: Large length suggests vehicle
-        if length >= 2.5:
-            confidence = min(0.7, length / 5.0)
-            return 'VEHICLE', confidence
-
-        # Rule 6: Very small objects are unknown (likely noise)
-        if volume < 0.1 or features.num_points < 5:
-            return 'UNKNOWN', 0.3
-
-        # Default: Unknown
-        return 'UNKNOWN', 0.5
-
-    def _calculate_vehicle_confidence(self, features: ObjectFeatures) -> float:
-        """
-        Calculate confidence score for vehicle classification.
-
-        Args:
-            features: Object features
-
-        Returns:
-            Confidence score (0-1)
-        """
-        # Typical car dimensions: 4.5m x 1.8m x 1.5m
-        length_score = 1.0 - abs(features.length - 4.5) / 4.5
-        width_score = 1.0 - abs(features.width - 1.8) / 1.8
-        height_score = 1.0 - abs(features.height - 1.5) / 1.5
-
-        # Clip scores to [0, 1]
-        length_score = max(0, min(1, length_score))
-        width_score = max(0, min(1, width_score))
-        height_score = max(0, min(1, height_score))
-
-        # Weighted average
-        confidence = 0.4 * length_score + 0.3 * width_score + 0.3 * height_score
-
-        # Boost confidence for very large objects
-        if features.volume > 10:
-            confidence = min(0.95, confidence + 0.1)
-
-        return max(0.5, min(0.95, confidence))
+    # ------------------------------------------------------------------
+    def _vehicle_confidence(self, f: ObjectFeatures) -> float:
+        """Confidence based on closeness to typical car (4.5 × 1.8 × 1.5 m)."""
+        ls = max(0.0, 1.0 - abs(f.length - 4.5) / 4.5)
+        ws = max(0.0, 1.0 - abs(f.width  - 1.8) / 1.8)
+        hs = max(0.0, 1.0 - abs(f.height - 1.5) / 1.5)
+        conf = 0.4 * ls + 0.3 * ws + 0.3 * hs
+        if f.volume > 10:
+            conf = min(0.92, conf + 0.10)
+        return max(0.50, min(0.92, conf))
 
 
-def extract_and_classify(points: np.ndarray,
-                        cluster_labels: np.ndarray,
-                        verbose: bool = True) -> Tuple[List[ObjectFeatures], Dict[int, str]]:
-    """
-    Convenience function to extract features and classify objects.
+# ── Convenience wrapper ────────────────────────────────────────────────────────
 
-    Args:
-        points: Point cloud (N, 4)
-        cluster_labels: Cluster labels
-        verbose: Print progress information
-
-    Returns:
-        Tuple of (features_list, classifications)
-    """
-    # Extract features
+def extract_and_classify(points:         np.ndarray,
+                         cluster_labels: np.ndarray,
+                         verbose:        bool = True) -> Tuple[List[ObjectFeatures],
+                                                               Dict[int, str]]:
+    """Extract features and classify in one call."""
     extractor = FeatureExtractor()
-    features_list = extractor.extract_features(points, cluster_labels, verbose)
-
-    # Classify objects
+    features  = extractor.extract_features(points, cluster_labels, verbose)
     classifier = RuleBasedClassifier()
-    classifications = classifier.classify(features_list, verbose)
-
-    return features_list, classifications
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    from data_loader import generate_simulated_frame
-    from preprocessing import preprocess_point_cloud
-    from clustering import cluster_point_cloud
-
-    print("="*70)
-    print("FEATURE EXTRACTION & CLASSIFICATION MODULE - TEST")
-    print("="*70)
-
-    # Generate, preprocess, and cluster test data
-    print("\n[Test 1] Processing simulated data...")
-    raw_points = generate_simulated_frame(num_points=15000, seed=42)
-    processed_points = preprocess_point_cloud(raw_points, verbose=False)
-    labels, num_clusters = cluster_point_cloud(processed_points, verbose=False)
-    print(f"  Detected {num_clusters} clusters")
-
-    # Extract features and classify
-    print("\n[Test 2] Extracting features and classifying...")
-    features_list, classifications = extract_and_classify(processed_points, labels)
-
-    # Print detailed results
-    print("\n[Test 3] Detailed Classification Results:")
-    for features in features_list:
-        print(f"\n  Object {features.cluster_id}:")
-        print(f"    Class: {features.classification} (confidence: {features.confidence:.1%})")
-        print(f"    Points: {features.num_points}")
-        print(f"    Dimensions: {features.length:.2f}m x {features.width:.2f}m x {features.height:.2f}m")
-        print(f"    Volume: {features.volume:.2f} m3")
-        print(f"    Distance from sensor: {features.distance_from_sensor:.2f} m")
-        print(f"    Point density: {features.point_density:.1f} pts/m3")
-
-    print("\n" + "="*70)
-    print("Classification module ready for use.")
-    print("="*70)
+    labels    = classifier.classify(features, verbose)
+    return features, labels

@@ -1,532 +1,409 @@
 """
-Performance Analysis and Verification Module
-=============================================
-Verification & Validation for LiDAR Object Detection Pipeline
+Performance Analysis — Honest Verification Metrics (No Ground Truth)
+=====================================================================
+DLMDSEAAD02 -- Localization, Motion Planning and Sensor Fusion
 
-Provides:
-1. Classification performance metrics
-2. Tracking performance metrics
-3. Theoretical analysis for target rates
-4. Report generation
+Since the dataset contains NO ground-truth annotations, classical supervised
+metrics (precision, recall, F1, MOTA, MOTP, classification accuracy) CANNOT
+be computed.  Any numeric claim for those metrics would require comparing
+predictions against known labels -- which do not exist.
 
-Target Metrics:
-- Classification rate: ~99%
-- False alarm rate: ~0.01 per hour
+This module therefore computes ONLY verification-oriented proxy metrics that
+are derivable from the pipeline output itself:
 
-Course: Localization, Motion Planning and Sensor Fusion
-Assignment: LiDAR-based Object Detection and Tracking Pipeline
+  1. Detection stability
+       mean ± std of cluster count per frame
+       low std → preprocessing / clustering behaves consistently
+
+  2. Temporal track stability index (TSI)
+       TSI = std(active_tracks_per_frame) / mean(active_tracks_per_frame)
+       TSI ≈ 0 is ideal; TSI > 0.5 indicates unstable detection
+
+  3. Track length distribution
+       How many frames does the average track persist?
+       Long tracks indicate reliable data association.
+       Note: track length is in frames; multiply by dt for seconds.
+
+  4. Classification distribution
+       Fraction of detections assigned each label.
+       High UNKNOWN fraction indicates conservative (safe) behaviour.
+       This is NOT accuracy -- it is a distribution statistic.
+
+  5. Classification consistency per track
+       Over the lifetime of each confirmed track, what percentage of frames
+       keep the same class label?  High consistency indicates stable features.
+
+What is explicitly NOT reported:
+  - MOTA / MOTP  (require ground truth)
+  - Precision / Recall / F1  (require ground truth)
+  - Classification accuracy as a percentage  (requires ground truth)
+  - False alarm rate per hour  (requires ground truth)
+
+Reference for verification-oriented evaluation without ground truth:
+  Pendleton et al. (2017). Perception, planning, control, and coordination
+  for autonomous vehicles. Machines, 5(1), 6.
+
+Author: Kalpana Abhiseka Maddi
 """
 
 import numpy as np
-from typing import Dict, List, Tuple, Optional
-from dataclasses import dataclass, field
 from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 import time
 
 
-@dataclass
-class DetectionMetrics:
-    """Metrics for object detection performance."""
-    total_detections: int = 0
-    true_positives: int = 0
-    false_positives: int = 0
-    false_negatives: int = 0
-    precision: float = 0.0
-    recall: float = 0.0
-    f1_score: float = 0.0
-
+# ── Result containers ─────────────────────────────────────────────────────────
 
 @dataclass
-class ClassificationMetrics:
-    """Metrics for classification performance."""
-    total_classified: int = 0
-    correct_classifications: int = 0
-    accuracy: float = 0.0
-    confusion_matrix: Dict = field(default_factory=dict)
-    per_class_accuracy: Dict = field(default_factory=dict)
+class DetectionStability:
+    """Detection count statistics across all frames."""
+    frames_processed:     int
+    mean_clusters:        float
+    std_clusters:         float
+    min_clusters:         int
+    max_clusters:         int
+    mean_points_per_frame: float
 
 
 @dataclass
 class TrackingMetrics:
-    """Metrics for tracking performance."""
-    total_tracks: int = 0
-    average_track_length: float = 0.0
-    id_switches: int = 0
-    fragmentations: int = 0
-    mota: float = 0.0  # Multi-Object Tracking Accuracy
-    motp: float = 0.0  # Multi-Object Tracking Precision
+    """Track persistence statistics (no ground truth required)."""
+    total_tracks_created: int
+    mean_track_length_frames: float
+    std_track_length_frames:  float
+    max_track_length_frames:  int
+    min_track_length_frames:  int
+    temporal_stability_index: float   # std / mean of active-tracks-per-frame
+    mean_active_tracks:       float
+    std_active_tracks:        float
 
 
 @dataclass
-class PerformanceReport:
-    """Complete performance analysis report."""
-    detection: DetectionMetrics
-    classification: ClassificationMetrics
-    tracking: TrackingMetrics
-    processing_fps: float
-    theoretical_classification_rate: float
-    theoretical_false_alarm_rate: float
-    meets_requirements: bool
+class ClassificationStats:
+    """Classification distribution (NOT accuracy -- no ground truth)."""
+    total_detections:     int
+    class_counts:         Dict[str, int]
+    class_fractions:      Dict[str, float]
+    # Per-track classification consistency (0–1; 1 = same class all frames)
+    mean_class_consistency:   float
+    std_class_consistency:    float
 
 
-class PerformanceAnalyzer:
+@dataclass
+class VerificationReport:
+    """Full verification report without ground truth."""
+    detection:       DetectionStability
+    tracking:        TrackingMetrics
+    classification:  ClassificationStats
+    processing_fps:  float
+    sensor_fps:      float
+    total_frames:    int
+    total_duration_s: float
+
+
+# ── Analyzer ──────────────────────────────────────────────────────────────────
+
+class VerificationAnalyzer:
     """
-    Analyzes and validates pipeline performance.
+    Collects per-frame pipeline outputs and computes verification metrics.
 
-    Provides theoretical analysis of how the algorithm can achieve:
-    - Classification rate ≈ 0.99 (99%)
-    - False alarm rate ≈ 0.01 per hour
+    Usage:
+        analyzer = VerificationAnalyzer(sensor_fps=10.0)
+        for frame in frames:
+            analyzer.record(clusters, tracks, processing_time_ms)
+        report = analyzer.generate_report()
+        analyzer.print_report(report)
     """
 
-    def __init__(self):
-        """Initialize analyzer."""
-        self.detection_results = []
-        self.classification_results = []
-        self.tracking_results = []
-        self.processing_times = []
+    def __init__(self, sensor_fps: float = 10.0):
+        self.sensor_fps = sensor_fps
+        self._cluster_counts:    List[int]   = []
+        self._point_counts:      List[int]   = []
+        self._active_track_counts: List[int] = []
+        self._processing_times:  List[float] = []
+        self._track_lengths:     Dict[int, int] = defaultdict(int)
+        self._track_classes:     Dict[int, List[str]] = defaultdict(list)
         self.frame_count = 0
 
-    def record_frame_results(self,
-                            detections: List,
-                            classifications: Dict,
-                            tracks: List,
-                            processing_time: float):
+    # ------------------------------------------------------------------
+    def record(self,
+               num_clusters:     int,
+               num_points:       int,
+               tracks:           list,
+               processing_ms:    float) -> None:
         """
-        Record results from a processed frame.
+        Record output of one frame.
 
         Args:
-            detections: List of detected objects
-            classifications: Classification results
-            tracks: Tracking results
-            processing_time: Frame processing time in ms
+            num_clusters:  Number of DBSCAN clusters found this frame
+            num_points:    Number of preprocessed points this frame
+            tracks:        Confirmed TrackState objects this frame
+            processing_ms: Wall-clock time for this frame in milliseconds
         """
         self.frame_count += 1
-        self.processing_times.append(processing_time)
+        self._cluster_counts.append(num_clusters)
+        self._point_counts.append(num_points)
+        self._active_track_counts.append(len(tracks))
+        self._processing_times.append(processing_ms)
 
-        self.detection_results.append({
-            'frame': self.frame_count,
-            'num_detections': len(detections),
-            'detections': detections
-        })
+        for t in tracks:
+            tid = t.track_id
+            self._track_lengths[tid] += 1
+            self._track_classes[tid].append(t.classification)
 
-        self.classification_results.append({
-            'frame': self.frame_count,
-            'classifications': classifications
-        })
+    # ------------------------------------------------------------------
+    def generate_report(self) -> VerificationReport:
+        """Compute and return the full verification report."""
+        if self.frame_count == 0:
+            raise RuntimeError("No frames recorded.")
 
-        self.tracking_results.append({
-            'frame': self.frame_count,
-            'num_tracks': len(tracks),
-            'tracks': tracks
-        })
-
-    def compute_classification_metrics(self,
-                                       ground_truth: Optional[Dict] = None) -> ClassificationMetrics:
-        """
-        Compute classification performance metrics.
-
-        Args:
-            ground_truth: Optional ground truth labels
-
-        Returns:
-            Classification metrics
-        """
-        metrics = ClassificationMetrics()
-
-        # Aggregate all classifications
-        all_classifications = []
-        for result in self.classification_results:
-            for cluster_id, cls in result['classifications'].items():
-                all_classifications.append(cls)
-
-        metrics.total_classified = len(all_classifications)
-
-        # Count by class
-        class_counts = defaultdict(int)
-        for cls in all_classifications:
-            class_counts[cls] += 1
-
-        # Without ground truth, estimate based on classification confidence
-        # This is a self-consistency check
-        if ground_truth is None:
-            # Assume high-confidence classifications are correct
-            # This is a proxy for actual accuracy
-            high_confidence = sum(1 for r in self.classification_results
-                                 for det in r.get('detections', [])
-                                 if hasattr(det, 'confidence') and det.confidence > 0.7)
-
-            metrics.accuracy = min(0.95, high_confidence / max(metrics.total_classified, 1))
-        else:
-            # Compare with ground truth
-            correct = 0
-            for result in self.classification_results:
-                frame = result['frame']
-                for cluster_id, cls in result['classifications'].items():
-                    gt_cls = ground_truth.get((frame, cluster_id))
-                    if gt_cls and cls == gt_cls:
-                        correct += 1
-            metrics.correct_classifications = correct
-            metrics.accuracy = correct / max(metrics.total_classified, 1)
-
-        metrics.per_class_accuracy = dict(class_counts)
-
-        return metrics
-
-    def compute_tracking_metrics(self) -> TrackingMetrics:
-        """
-        Compute tracking performance metrics.
-
-        Returns:
-            Tracking metrics
-        """
-        metrics = TrackingMetrics()
-
-        if not self.tracking_results:
-            return metrics
-
-        # Track statistics
-        track_ids_seen = set()
-        track_lengths = defaultdict(int)
-
-        for result in self.tracking_results:
-            for track in result['tracks']:
-                track_id = track.track_id if hasattr(track, 'track_id') else track.get('track_id', 0)
-                track_ids_seen.add(track_id)
-                track_lengths[track_id] += 1
-
-        metrics.total_tracks = len(track_ids_seen)
-        if track_lengths:
-            metrics.average_track_length = np.mean(list(track_lengths.values()))
-
-        # Estimate MOTA/MOTP without ground truth
-        # Using heuristics based on track consistency
-        metrics.mota = min(0.90, 1.0 - (metrics.id_switches + metrics.fragmentations) /
-                          max(metrics.total_tracks, 1))
-        metrics.motp = 0.85  # Estimated position accuracy
-
-        return metrics
-
-    def compute_theoretical_rates(self) -> Tuple[float, float]:
-        """
-        Compute theoretical classification and false alarm rates.
-
-        Returns:
-            Tuple of (classification_rate, false_alarm_rate_per_hour)
-        """
-        # Theoretical Classification Rate Analysis
-        # =========================================
-        #
-        # Our rule-based classifier achieves high accuracy because:
-        #
-        # 1. Vehicle Detection (high accuracy ~99%):
-        #    - Clear dimensional constraints: L=2-8m, W=1.3-3m, H=1-3.5m
-        #    - Volume threshold provides robustness
-        #    - Cars have distinct geometry vs pedestrians
-        #
-        # 2. Pedestrian Detection (high accuracy ~98%):
-        #    - Distinct aspect ratio (height >> width)
-        #    - Small footprint (0.2-1.2m x 0.2-1.2m)
-        #    - Height constraint (1.2-2.2m)
-        #
-        # 3. Factors reducing false classifications:
-        #    - Multi-rule decision logic
-        #    - Confidence thresholding
-        #    - DBSCAN pre-filters noise
-        #    - Ground removal eliminates ground clutter
-        #
-        # Combined classification rate estimate:
-        # P(correct) = P(vehicle_correct) * P(vehicle) + P(ped_correct) * P(ped)
-        #            ≈ 0.99 * 0.7 + 0.98 * 0.2 + 0.90 * 0.1 (unknown)
-        #            ≈ 0.97-0.99
-
-        p_vehicle_correct = 0.99  # Vehicles are easy to classify
-        p_pedestrian_correct = 0.98  # Pedestrians slightly harder
-        p_unknown_correct = 0.90  # Unknown class less reliable
-
-        # Typical distribution in driving scenarios
-        p_vehicle = 0.70
-        p_pedestrian = 0.20
-        p_unknown = 0.10
-
-        classification_rate = (p_vehicle_correct * p_vehicle +
-                              p_pedestrian_correct * p_pedestrian +
-                              p_unknown_correct * p_unknown)
-
-        # Theoretical False Alarm Rate Analysis
-        # =====================================
-        #
-        # False alarms = detections that don't correspond to real objects
-        #
-        # Sources of false alarms:
-        # 1. Noise clusters surviving DBSCAN (rare with min_samples=10)
-        # 2. Ground points misclassified as objects (rare with RANSAC)
-        # 3. Vegetation/clutter classified as vehicle/pedestrian
-        #
-        # Mitigation:
-        # 1. DBSCAN min_samples = 10-15 eliminates small noise clusters
-        # 2. RANSAC ground removal is >99% effective
-        # 3. Size/volume thresholds filter out most non-object clusters
-        # 4. Statistical outlier removal in preprocessing
-        #
-        # At 10 FPS, processing 36,000 frames/hour
-        # Target: <0.01 false alarms per hour
-        # = 0.01 / 36,000 = 2.78e-7 false alarms per frame
-        #
-        # This is achievable with:
-        # - Strict DBSCAN parameters (eps=0.5, min_samples=10)
-        # - Volume minimum (>0.1 m³)
-        # - Tracking confirmation (min_hits=3)
-        #
-        # Each confirmed track requires 3 consistent detections,
-        # reducing false alarm probability by factor of ~1000
-
-        frames_per_hour = 10 * 3600  # 10 FPS
-        # Probability of false alarm per frame
-        p_fa_per_frame = 0.001  # 0.1% per frame before tracking
-
-        # Tracking reduces false alarms (need 3 consecutive detections)
-        p_fa_tracked = p_fa_per_frame ** 3  # ~1e-9
-
-        false_alarm_rate_per_hour = p_fa_tracked * frames_per_hour
-
-        return classification_rate, false_alarm_rate_per_hour
-
-    def generate_performance_report(self) -> PerformanceReport:
-        """
-        Generate complete performance analysis report.
-
-        Returns:
-            PerformanceReport dataclass
-        """
-        detection_metrics = DetectionMetrics(
-            total_detections=sum(r['num_detections'] for r in self.detection_results)
+        # ── Detection stability ───────────────────────────────────────────────
+        cc = np.array(self._cluster_counts)
+        det = DetectionStability(
+            frames_processed      = self.frame_count,
+            mean_clusters         = float(np.mean(cc)),
+            std_clusters          = float(np.std(cc)),
+            min_clusters          = int(cc.min()),
+            max_clusters          = int(cc.max()),
+            mean_points_per_frame = float(np.mean(self._point_counts)),
         )
 
-        classification_metrics = self.compute_classification_metrics()
-        tracking_metrics = self.compute_tracking_metrics()
+        # ── Tracking metrics ──────────────────────────────────────────────────
+        lengths = np.array(list(self._track_lengths.values()), dtype=float)
+        atc     = np.array(self._active_track_counts, dtype=float)
+        tsi     = float(np.std(atc) / max(np.mean(atc), 0.1))
 
-        # Processing performance
-        avg_time = np.mean(self.processing_times) if self.processing_times else 0
-        fps = 1000.0 / avg_time if avg_time > 0 else 0
-
-        # Theoretical rates
-        class_rate, fa_rate = self.compute_theoretical_rates()
-
-        # Check if requirements are met
-        meets_requirements = (class_rate >= 0.99 and fa_rate <= 0.01)
-
-        return PerformanceReport(
-            detection=detection_metrics,
-            classification=classification_metrics,
-            tracking=tracking_metrics,
-            processing_fps=fps,
-            theoretical_classification_rate=class_rate,
-            theoretical_false_alarm_rate=fa_rate,
-            meets_requirements=meets_requirements
+        trk = TrackingMetrics(
+            total_tracks_created      = len(self._track_lengths),
+            mean_track_length_frames  = float(np.mean(lengths)) if len(lengths) else 0.0,
+            std_track_length_frames   = float(np.std(lengths))  if len(lengths) else 0.0,
+            max_track_length_frames   = int(lengths.max())       if len(lengths) else 0,
+            min_track_length_frames   = int(lengths.min())       if len(lengths) else 0,
+            temporal_stability_index  = tsi,
+            mean_active_tracks        = float(np.mean(atc)),
+            std_active_tracks         = float(np.std(atc)),
         )
 
-    def print_performance_summary(self, report: PerformanceReport = None):
-        """Print performance analysis summary."""
+        # ── Classification distribution ───────────────────────────────────────
+        # Aggregate all classification labels from all confirmed tracks
+        all_labels: List[str] = []
+        for labels in self._track_classes.values():
+            all_labels.extend(labels)
+
+        class_counts: Dict[str, int] = defaultdict(int)
+        for lbl in all_labels:
+            class_counts[lbl] += 1
+        total = max(len(all_labels), 1)
+
+        class_fractions = {k: v / total for k, v in class_counts.items()}
+
+        # Per-track consistency
+        consistencies = []
+        for labels in self._track_classes.values():
+            if len(labels) < 2:
+                continue
+            modal = max(set(labels), key=labels.count)
+            consistencies.append(labels.count(modal) / len(labels))
+
+        cls_stats = ClassificationStats(
+            total_detections       = len(all_labels),
+            class_counts           = dict(class_counts),
+            class_fractions        = class_fractions,
+            mean_class_consistency = float(np.mean(consistencies)) if consistencies else 1.0,
+            std_class_consistency  = float(np.std(consistencies))  if consistencies else 0.0,
+        )
+
+        # ── Processing performance ────────────────────────────────────────────
+        avg_ms  = float(np.mean(self._processing_times)) if self._processing_times else 0.0
+        proc_fps = 1000.0 / max(avg_ms, 0.1)
+
+        duration_s = self.frame_count / self.sensor_fps
+
+        return VerificationReport(
+            detection        = det,
+            tracking         = trk,
+            classification   = cls_stats,
+            processing_fps   = proc_fps,
+            sensor_fps       = self.sensor_fps,
+            total_frames     = self.frame_count,
+            total_duration_s = duration_s,
+        )
+
+    # ------------------------------------------------------------------
+    def print_report(self, report: Optional[VerificationReport] = None) -> None:
+        """Print the verification report to stdout."""
         if report is None:
-            report = self.generate_performance_report()
+            report = self.generate_report()
 
-        print("\n" + "="*70)
-        print("PERFORMANCE ANALYSIS REPORT")
-        print("="*70)
+        sep = "=" * 70
 
-        print("\n--- Detection Performance ---")
-        print(f"  Total detections: {report.detection.total_detections}")
-        print(f"  Frames processed: {self.frame_count}")
-        print(f"  Detections/frame: {report.detection.total_detections / max(self.frame_count, 1):.2f}")
+        print(f"\n{sep}")
+        print("VERIFICATION REPORT  (Ground-truth-free proxy metrics)")
+        print(f"{sep}")
+        print("NOTE: No ground-truth labels are available.  Metrics below are")
+        print("      verification proxies only -- NOT precision / recall / accuracy.")
+        print(f"{sep}")
 
-        print("\n--- Classification Performance ---")
-        print(f"  Total classified: {report.classification.total_classified}")
-        print(f"  Estimated accuracy: {report.classification.accuracy:.1%}")
-        print(f"  Class distribution: {report.classification.per_class_accuracy}")
+        r = report
+        fps_sensor  = r.sensor_fps
+        dt          = 1.0 / fps_sensor
 
-        print("\n--- Tracking Performance ---")
-        print(f"  Total tracks: {report.tracking.total_tracks}")
-        print(f"  Average track length: {report.tracking.average_track_length:.1f} frames")
-        print(f"  Estimated MOTA: {report.tracking.mota:.1%}")
+        print(f"\n  Dataset            : {r.total_frames} frames  "
+              f"({r.total_duration_s:.1f} s at {fps_sensor} fps)")
+        print(f"  Processing speed   : {r.processing_fps:.1f} fps  "
+              f"(avg {1000/max(r.processing_fps,0.1):.0f} ms/frame)")
 
-        print("\n--- Processing Performance ---")
-        print(f"  Average FPS: {report.processing_fps:.1f}")
-        print(f"  Average frame time: {1000/max(report.processing_fps, 0.1):.1f} ms")
+        print(f"\n{'─'*70}")
+        print("  1. Detection Stability  (std/mean of cluster count per frame)")
+        print(f"{'─'*70}")
+        d = r.detection
+        cv = d.std_clusters / max(d.mean_clusters, 0.1)
+        print(f"  Frames processed         : {d.frames_processed}")
+        print(f"  Mean clusters / frame    : {d.mean_clusters:.1f}")
+        print(f"  Std  clusters / frame    : {d.std_clusters:.1f}  "
+              f"(CV = {cv:.2f}  -- lower is more stable)")
+        print(f"  Range                    : [{d.min_clusters}, {d.max_clusters}]")
+        print(f"  Mean preprocessed points : {d.mean_points_per_frame:.0f}")
 
-        print("\n--- Theoretical Performance Analysis ---")
-        print(f"  Classification rate: {report.theoretical_classification_rate:.2%}")
-        print(f"  Target: ≥99%")
-        print(f"  False alarm rate: {report.theoretical_false_alarm_rate:.4f}/hour")
-        print(f"  Target: ≤0.01/hour")
+        print(f"\n{'─'*70}")
+        print("  2. Temporal Stability Index  (TSI = std/mean active tracks)")
+        print(f"{'─'*70}")
+        t = r.tracking
+        print(f"  Active tracks — mean ± std : {t.mean_active_tracks:.1f} ± {t.std_active_tracks:.1f}")
+        print(f"  Temporal Stability Index   : {t.temporal_stability_index:.3f}  "
+              f"(0 = perfectly stable; <0.3 = good)")
 
-        print("\n--- Requirements Verification ---")
-        status = "PASS" if report.meets_requirements else "NEEDS IMPROVEMENT"
-        print(f"  Status: {status}")
+        print(f"\n{'─'*70}")
+        print("  3. Track Length Distribution")
+        print(f"{'─'*70}")
+        mean_s = t.mean_track_length_frames * dt
+        max_s  = t.max_track_length_frames  * dt
+        print(f"  Total unique tracks        : {t.total_tracks_created}")
+        print(f"  Mean track length          : {t.mean_track_length_frames:.1f} frames  "
+              f"= {mean_s:.2f} s  (at {fps_sensor} fps)")
+        print(f"  Std  track length          : {t.std_track_length_frames:.1f} frames")
+        print(f"  Max  track length          : {t.max_track_length_frames} frames  "
+              f"= {max_s:.2f} s")
+        print(f"  Min  track length          : {t.min_track_length_frames} frames")
 
-        print("="*70)
+        print(f"\n{'─'*70}")
+        print("  4. Classification Distribution  (NOT accuracy)")
+        print(f"{'─'*70}")
+        c = r.classification
+        print(f"  Total detections (all frames) : {c.total_detections}")
+        for lbl in ['VEHICLE', 'PEDESTRIAN', 'STATIC_STRUCTURE', 'UNKNOWN']:
+            cnt  = c.class_counts.get(lbl, 0)
+            frac = c.class_fractions.get(lbl, 0.0)
+            print(f"    {lbl:<20}: {cnt:5d}  ({frac:.1%})")
+        print(f"\n  NOTE: UNKNOWN + STATIC_STRUCTURE fraction reflects the")
+        print(f"        conservative design -- unclassified objects are never")
+        print(f"        forced into a wrong class.")
 
-    def get_verification_discussion(self) -> str:
-        """
-        Generate verification and validation discussion text.
+        print(f"\n{'─'*70}")
+        print("  5. Per-Track Classification Consistency")
+        print(f"{'─'*70}")
+        print(f"  Mean consistency (modal class fraction per track) :")
+        print(f"    {c.mean_class_consistency:.1%} ± {c.std_class_consistency:.1%}")
+        print(f"  (1.0 = track never changes its label; robust association)")
 
-        Returns:
-            Markdown-formatted discussion text for report
-        """
-        class_rate, fa_rate = self.compute_theoretical_rates()
-
-        discussion = """
-## Verification and Validation Analysis
-
-### Classification Rate Analysis (Target: ≥99%)
-
-The pipeline achieves high classification accuracy through:
-
-1. **Rule-Based Classification Logic**
-   - Clear geometric thresholds based on real vehicle dimensions
-   - Vehicle: L=2-8m, W=1.3-3m, H=1-3.5m (covers compact cars to trucks)
-   - Pedestrian: L,W=0.2-1.2m, H=1.2-2.2m with aspect ratio check
-   - Multi-rule decision tree with fallback conditions
-
-2. **Preprocessing Quality**
-   - RANSAC ground removal (>99% ground point elimination)
-   - Statistical outlier removal reduces noise-based false positives
-   - Range filtering (5-250m) per Blickfeld specifications
-
-3. **Clustering Quality**
-   - DBSCAN with eps=0.5m, min_samples=10 ensures dense clusters
-   - Separates distinct objects reliably
-   - Noise points labeled as -1 and excluded
-
-**Theoretical Classification Rate:** {class_rate:.2%}
-
-### False Alarm Rate Analysis (Target: ≤0.01/hour)
-
-False alarms are minimized through:
-
-1. **Multi-Stage Filtering**
-   - Range filter removes near/far unreliable points
-   - Ground removal eliminates ~70% of points
-   - DBSCAN requires 10+ points per cluster
-   - Volume threshold (>0.1 m³) filters tiny clusters
-
-2. **Track Confirmation**
-   - Kalman filter requires min_hits=3 for track confirmation
-   - Probability of random cluster appearing 3x consecutively: ~10⁻⁹
-   - This reduces false alarm rate by factor of ~1000
-
-3. **Processing Rate Calculation**
-   - At 10 FPS: 36,000 frames/hour
-   - With 0.1% false detection per frame
-   - After tracking: {fa_rate:.6f} false alarms/hour
-
-**Theoretical False Alarm Rate:** {fa_rate:.4f}/hour
-
-### Performance Validation Summary
-
-| Metric | Target | Achieved | Status |
-|--------|--------|----------|--------|
-| Classification Rate | ≥99% | {class_rate_pct} | {class_status} |
-| False Alarm Rate | ≤0.01/hr | {fa_rate_str}/hr | {fa_status} |
-| Real-time Processing | ≥10 FPS | ~15 FPS | ✓ |
-
-### Conclusion
-
-The algorithm design satisfies the specified performance requirements through:
-- Robust preprocessing to ensure data quality
-- Conservative clustering parameters to reduce false detections
-- Rule-based classification with clear geometric boundaries
-- Track confirmation to eliminate transient false positives
-""".format(
-            class_rate=class_rate,
-            fa_rate=fa_rate,
-            class_rate_pct=f"{class_rate:.1%}",
-            fa_rate_str=f"{fa_rate:.4f}",
-            class_status="✓" if class_rate >= 0.99 else "○",
-            fa_status="✓" if fa_rate <= 0.01 else "○"
-        )
-
-        return discussion
+        print(f"\n{sep}")
+        print("  METRICS NOT REPORTED (require ground truth not available):")
+        print("    MOTA / MOTP, Precision, Recall, F1,")
+        print("    Classification accuracy (%), False Alarm Rate/hour")
+        print(f"{sep}\n")
 
 
-def run_performance_analysis(data_dir: str = None,
-                            num_frames: int = 50,
-                            verbose: bool = True) -> PerformanceReport:
+# ── Convenience runner ────────────────────────────────────────────────────────
+
+def run_verification(data_dir: str,
+                     num_frames: Optional[int] = None,
+                     sensor_fps: float = 10.0,
+                     verbose:    bool = True) -> VerificationReport:
     """
-    Run complete performance analysis.
+    Run complete verification analysis on the dataset.
+
+    Loads ALL available frames from the four dataset parts, runs the pipeline,
+    and returns the VerificationReport.
 
     Args:
-        data_dir: Directory with LiDAR data (None for simulated)
-        num_frames: Number of frames to analyze
-        verbose: Print progress
+        data_dir:   Path to 'Lider datasets/' directory
+        num_frames: Cap on frames to process (None = all)
+        sensor_fps: Sensor update rate for time conversion (default 10 Hz)
+        verbose:    Print frame-level progress
 
     Returns:
-        PerformanceReport
+        VerificationReport
     """
-    from data_loader import generate_simulated_frame, BlickfeldDataLoader
-    from preprocessing import preprocess_point_cloud
-    from clustering import cluster_point_cloud
-    from classification import extract_and_classify
-    from enhanced_tracking import EnhancedMultiObjectTracker, EnhancedKalmanTracker
+    import glob, os, pandas as pd
+    from preprocessing   import LiDARPreprocessor
+    from clustering      import PointCloudClusterer
+    from classification  import FeatureExtractor, RuleBasedClassifier
+    from tracking        import MultiObjectTracker, KalmanObjectTracker
 
-    print("="*70)
-    print("RUNNING PERFORMANCE ANALYSIS")
-    print("="*70)
+    # Collect all CSV files from all parts
+    parts    = sorted(glob.glob(os.path.join(data_dir, '*_part_*')))
+    csv_files: List[str] = []
+    for part in parts:
+        if os.path.isdir(part):
+            csv_files.extend(sorted(glob.glob(os.path.join(part, '*.csv'))))
+    if num_frames:
+        csv_files = csv_files[:num_frames]
 
-    # Initialize
-    analyzer = PerformanceAnalyzer()
-    tracker = EnhancedMultiObjectTracker(max_age=5, min_hits=2)
-    EnhancedKalmanTracker._next_id = 0
+    print(f"\nVerification: {len(csv_files)} frames  "
+          f"({len(csv_files)/sensor_fps:.1f} s at {sensor_fps} fps)\n")
 
-    # Load data
-    if data_dir:
-        loader = BlickfeldDataLoader(data_dir)
-        use_real_data = loader.get_num_frames() > 0
-    else:
-        use_real_data = False
+    # Pipeline components
+    preprocessor = LiDARPreprocessor(min_range=2.0, max_range=100.0,
+                                     voxel_size=0.15, ground_threshold=0.25)
+    clusterer    = PointCloudClusterer(eps=0.8, min_samples=8, min_cluster_size=8)
+    extractor    = FeatureExtractor()
+    classifier   = RuleBasedClassifier()
+    tracker      = MultiObjectTracker(max_age=8, min_hits=2,
+                                      association_threshold=4.0, dt=1.0/sensor_fps)
+    KalmanObjectTracker._next_id = 0
 
-    print(f"\nProcessing {num_frames} frames...")
+    analyzer = VerificationAnalyzer(sensor_fps=sensor_fps)
 
-    for frame_idx in range(num_frames):
-        start_time = time.time()
-
-        # Load frame
-        if use_real_data:
-            points = loader.load_frame(frame_idx)
-            if points is None:
+    for idx, csv_path in enumerate(csv_files):
+        t0 = time.time()
+        try:
+            df = pd.read_csv(csv_path, sep=';')
+            df.columns = df.columns.str.upper().str.strip()
+            if not all(c in df.columns for c in ['X', 'Y', 'Z']):
                 continue
-        else:
-            points = generate_simulated_frame(15000, seed=42, frame_index=frame_idx)
+            intensity = (df['INTENSITY'].values if 'INTENSITY' in df.columns
+                         else np.ones(len(df)) * 0.5)
+            pts = np.column_stack([df['X'].values, df['Y'].values,
+                                   df['Z'].values, intensity]).astype(np.float32)
+            pts = pts[~np.isnan(pts).any(axis=1)]
+            if len(pts) < 50:
+                continue
 
-        # Process
-        processed = preprocess_point_cloud(points, verbose=False)
-        labels, _ = cluster_point_cloud(processed, verbose=False)
-        features, classifications = extract_and_classify(processed, labels, verbose=False)
-        tracks = tracker.update(features, verbose=False)
+            processed  = preprocessor.preprocess(pts, verbose=False)
+            labels     = clusterer.cluster(processed, verbose=False)
+            features   = extractor.extract_features(processed, labels, verbose=False)
+            classifier.classify(features, verbose=False)
+            tracks     = tracker.update(features, verbose=False)
 
-        processing_time = (time.time() - start_time) * 1000
+            n_clusters = int(np.sum(np.unique(labels) != -1))
+            proc_ms    = (time.time() - t0) * 1000
+            analyzer.record(n_clusters, len(processed), tracks, proc_ms)
 
-        # Record results
-        analyzer.record_frame_results(
-            detections=features,
-            classifications=classifications,
-            tracks=tracks,
-            processing_time=processing_time
-        )
+        except Exception as exc:
+            if verbose:
+                print(f"  Warning: frame {idx} failed: {exc}")
+            continue
 
-        if verbose and (frame_idx + 1) % 10 == 0:
-            print(f"  Processed frame {frame_idx + 1}/{num_frames}")
+        if verbose and ((idx + 1) % 100 == 0 or idx == len(csv_files) - 1):
+            print(f"  [{idx+1}/{len(csv_files)}] clusters={n_clusters}  "
+                  f"active_tracks={len(tracks)}")
 
-    # Generate report
-    report = analyzer.generate_performance_report()
-    analyzer.print_performance_summary(report)
-
-    # Print verification discussion
-    discussion = analyzer.get_verification_discussion()
-    print(discussion)
-
+    report = analyzer.generate_report()
+    analyzer.print_report(report)
     return report
 
 
-# Test
-if __name__ == "__main__":
-    report = run_performance_analysis(num_frames=20)
+if __name__ == '__main__':
+    BASE = '/Users/abhisekmaddi/Documents/assignment/AI Autonomus/new model/Lider datasets'
+    run_verification(data_dir=BASE, verbose=True)
