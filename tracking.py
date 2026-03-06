@@ -1,552 +1,309 @@
 """
-Multi-Object Tracking Module with Kalman Filter
-===============================================
-Autonomous Driving Perception Pipeline - Object Tracking
+Multi-Object Tracking Module — Kalman Filter
+=============================================
+DLMDSEAAD02 -- Localization, Motion Planning and Sensor Fusion
 
-This module implements Kalman Filter-based multi-object tracking (MOT)
-to maintain consistent object IDs across frames and predict trajectories.
+Kalman-filter-based multi-object tracking (MOT) with constant-velocity model.
 
-Key Components:
-1. KalmanTracker: Single object tracker using Kalman Filter
-2. HungarianMatcher: Data association using Hungarian algorithm
-3. MultiObjectTracker: Manages multiple tracks across frames
+Additional feature (professor feedback fix):
+  After a track has been confirmed for STATIC_RECLASS_FRAMES or more frames,
+  its estimated speed is tested.  If speed < STATIC_SPEED_THRESHOLD (m/s) the
+  track is reclassified to STATIC_STRUCTURE.  This catches walls, fences, and
+  buildings that may have passed geometric classification but do not move.
 
-Motion Model: Constant Velocity (CV)
-State Vector: [x, y, vx, vy, width, length]
+State vector : [x, y, vx, vy, width, length]
+Measurement  : [x, y, width, length]
 
-Author: Perception Engineer
-Course: Localization, Motion Planning and Sensor Fusion
+Author: Kalpana Abhiseka Maddi
 """
 
 import numpy as np
 from filterpy.kalman import KalmanFilter
 from scipy.optimize import linear_sum_assignment
-from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple, Optional
 from dataclasses import dataclass
 from collections import deque
 
 from classification import ObjectFeatures
 
 
+# ── Constants ─────────────────────────────────────────────────────────────────
+# Tracks active for this many frames with speed below threshold → STATIC_STRUCTURE
+STATIC_RECLASS_FRAMES    = 8      # frames
+STATIC_SPEED_THRESHOLD   = 0.40   # m/s   (sensor fps * threshold = real-world speed)
+
+
+# ── Data class ────────────────────────────────────────────────────────────────
+
 @dataclass
 class TrackState:
-    """
-    State of a tracked object.
+    """Complete state of a tracked object, used downstream for visualisation."""
+    track_id:          int
+    position:          np.ndarray    # [x, y, z]
+    velocity:          np.ndarray    # [vx, vy]
+    dimensions:        np.ndarray    # [length, width, height]
+    classification:    str
+    confidence:        float
+    age:               int
+    hits:              int
+    time_since_update: int
+    history:           List[np.ndarray]
 
-    Contains position, velocity, dimensions, and metadata.
-    """
-    track_id: int
-    position: np.ndarray      # [x, y, z]
-    velocity: np.ndarray      # [vx, vy]
-    dimensions: np.ndarray    # [length, width, height]
-    classification: str
-    confidence: float
-    age: int                  # Frames since track creation
-    hits: int                 # Number of successful detections
-    time_since_update: int    # Frames since last measurement
-    history: List[np.ndarray] # Position history
 
+# ── Single-object Kalman tracker ──────────────────────────────────────────────
 
 class KalmanObjectTracker:
-    """
-    Kalman Filter-based tracker for a single object.
+    """Kalman Filter tracker for a single object (constant-velocity model)."""
 
-    Uses Constant Velocity motion model:
-    - State: [x, y, vx, vy, width, length]
-    - Measurements: [x, y, width, length]
-
-    The Kalman Filter provides:
-    1. Smooth state estimation from noisy measurements
-    2. Velocity estimation from position-only measurements
-    3. Prediction during temporary occlusions
-    """
-
-    # Class variable for unique ID generation
-    _next_id = 0
+    _next_id: int = 0
 
     def __init__(self,
                  initial_position: np.ndarray,
-                 initial_size: np.ndarray,
-                 classification: str = 'UNKNOWN',
-                 dt: float = 0.1):
-        """
-        Initialize Kalman tracker for a single object.
-
-        Args:
-            initial_position: Initial [x, y] position
-            initial_size: Initial [width, length]
-            classification: Object class (VEHICLE, PEDESTRIAN, UNKNOWN)
-            dt: Time step between frames (seconds)
-        """
-        # Assign unique track ID
-        self.track_id = KalmanObjectTracker._next_id
+                 initial_size:     np.ndarray,
+                 classification:   str   = 'UNKNOWN',
+                 dt:               float = 0.1):
+        self.track_id      = KalmanObjectTracker._next_id
         KalmanObjectTracker._next_id += 1
 
-        # Metadata
         self.classification = classification
-        self.dt = dt
-        self.age = 0
-        self.hits = 1
+        self.dt             = dt
+        self.age            = 0
+        self.hits           = 1
         self.time_since_update = 0
-        self.confidence = 0.5
-
-        # Position history for trajectory visualization
-        self.history = deque(maxlen=30)  # Store last 30 positions
+        self.confidence     = 0.5
+        self.history        = deque(maxlen=50)
         self.history.append(initial_position.copy())
 
-        # Initialize 6D Kalman Filter
-        # State: [x, y, vx, vy, width, length]
+        # Speed history for static reclassification
+        self._speed_history: deque = deque(maxlen=STATIC_RECLASS_FRAMES)
+
+        # 6-D Kalman Filter  state = [x, y, vx, vy, w, l]
         self.kf = KalmanFilter(dim_x=6, dim_z=4)
 
-        # Initial state
         self.kf.x = np.array([
-            initial_position[0],  # x
-            initial_position[1],  # y
-            0.0,                   # vx (initially stationary)
-            0.0,                   # vy (initially stationary)
-            initial_size[0],       # width
-            initial_size[1]        # length
+            initial_position[0], initial_position[1],
+            0.0, 0.0,
+            initial_size[0], initial_size[1]
         ]).reshape(-1, 1)
 
-        # State transition matrix F (Constant Velocity model)
-        # x(k+1) = x(k) + vx(k) * dt
-        # y(k+1) = y(k) + vy(k) * dt
-        # vx(k+1) = vx(k)
-        # vy(k+1) = vy(k)
-        # width(k+1) = width(k)
-        # length(k+1) = length(k)
+        # State-transition matrix F (constant velocity)
         self.kf.F = np.array([
-            [1, 0, dt, 0,  0, 0],  # x
-            [0, 1, 0,  dt, 0, 0],  # y
-            [0, 0, 1,  0,  0, 0],  # vx
-            [0, 0, 0,  1,  0, 0],  # vy
-            [0, 0, 0,  0,  1, 0],  # width
-            [0, 0, 0,  0,  0, 1],  # length
+            [1, 0, dt, 0,  0, 0],
+            [0, 1, 0,  dt, 0, 0],
+            [0, 0, 1,  0,  0, 0],
+            [0, 0, 0,  1,  0, 0],
+            [0, 0, 0,  0,  1, 0],
+            [0, 0, 0,  0,  0, 1],
         ])
 
-        # Measurement matrix H
-        # We measure: [x, y, width, length]
+        # Measurement matrix H  (we observe x, y, w, l)
         self.kf.H = np.array([
-            [1, 0, 0, 0, 0, 0],  # x
-            [0, 1, 0, 0, 0, 0],  # y
-            [0, 0, 0, 0, 1, 0],  # width
-            [0, 0, 0, 0, 0, 1],  # length
+            [1, 0, 0, 0, 0, 0],
+            [0, 1, 0, 0, 0, 0],
+            [0, 0, 0, 0, 1, 0],
+            [0, 0, 0, 0, 0, 1],
         ])
 
-        # Measurement noise covariance R
-        # How noisy are the measurements from detection?
-        self.kf.R = np.diag([
-            0.1,   # x position noise (meters)
-            0.1,   # y position noise (meters)
-            0.05,  # width noise (meters)
-            0.05,  # length noise (meters)
-        ])
+        # Measurement noise R
+        self.kf.R = np.diag([0.10, 0.10, 0.05, 0.05])
 
-        # Process noise covariance Q
-        # How much does the true state deviate from our model?
-        q_pos = 0.01   # Position process noise
-        q_vel = 0.1    # Velocity process noise (higher - velocity changes)
-        q_dim = 0.001  # Dimension process noise (very low - size is constant)
+        # Process noise Q
+        self.kf.Q = np.diag([0.01, 0.01, 0.10, 0.10, 0.001, 0.001])
 
-        self.kf.Q = np.diag([
-            q_pos,  # x
-            q_pos,  # y
-            q_vel,  # vx
-            q_vel,  # vy
-            q_dim,  # width
-            q_dim,  # length
-        ])
+        # Initial covariance P  (high uncertainty on velocity)
+        self.kf.P = np.diag([1.0, 1.0, 10.0, 10.0, 0.5, 0.5])
 
-        # Initial state covariance P
-        # High uncertainty for velocity, lower for position/size
-        self.kf.P = np.diag([
-            1.0,    # x
-            1.0,    # y
-            10.0,   # vx (very uncertain)
-            10.0,   # vy (very uncertain)
-            0.5,    # width
-            0.5,    # length
-        ])
-
+    # ------------------------------------------------------------------
     def predict(self) -> np.ndarray:
-        """
-        Predict next state (time update).
-
-        Called every frame, even without a matching detection.
-        Allows tracking to continue during occlusions.
-
-        Returns:
-            Predicted state [x, y, vx, vy, width, length]
-        """
         self.kf.predict()
-        self.age += 1
+        self.age               += 1
         self.time_since_update += 1
         return self.kf.x.flatten()
 
     def update(self, measurement: np.ndarray) -> np.ndarray:
-        """
-        Update state with new measurement (measurement update).
-
-        Args:
-            measurement: Observed [x, y, width, length]
-
-        Returns:
-            Updated state [x, y, vx, vy, width, length]
-        """
         self.kf.update(measurement.reshape(-1, 1))
-        self.hits += 1
-        self.time_since_update = 0
-
-        # Add to position history
-        position = self.get_position()
-        self.history.append(position.copy())
-
-        return self.kf.x.flatten()
-
-    def get_state(self) -> np.ndarray:
-        """Get current state estimate."""
-        return self.kf.x.flatten()
-
-    def get_position(self) -> np.ndarray:
-        """Get current position [x, y]."""
-        return np.array([self.kf.x[0, 0], self.kf.x[1, 0]])
-
-    def get_velocity(self) -> np.ndarray:
-        """Get current velocity [vx, vy]."""
-        return np.array([self.kf.x[2, 0], self.kf.x[3, 0]])
-
-    def get_speed(self) -> float:
-        """Get current speed (magnitude of velocity)."""
-        vel = self.get_velocity()
-        return np.sqrt(vel[0]**2 + vel[1]**2)
-
-    def get_dimensions(self) -> np.ndarray:
-        """Get current dimensions [width, length]."""
-        return np.array([self.kf.x[4, 0], self.kf.x[5, 0]])
-
-    def get_bbox(self) -> np.ndarray:
-        """Get bounding box [x, y, width, length]."""
+        self.hits              += 1
+        self.time_since_update  = 0
         pos = self.get_position()
-        dims = self.get_dimensions()
-        return np.array([pos[0], pos[1], dims[0], dims[1]])
+        self.history.append(pos.copy())
+
+        # Record speed for static reclassification
+        speed = self.get_speed()
+        self._speed_history.append(speed)
+
+        # Reclassify static objects ------------------------------------------
+        if (len(self._speed_history) >= STATIC_RECLASS_FRAMES and
+                self.hits >= STATIC_RECLASS_FRAMES):
+            avg_speed = float(np.mean(list(self._speed_history)))
+            if (avg_speed < STATIC_SPEED_THRESHOLD and
+                    self.classification not in ('STATIC_STRUCTURE', 'PEDESTRIAN')):
+                self.classification = 'STATIC_STRUCTURE'
+                self.confidence     = 0.80
+
+        return self.kf.x.flatten()
+
+    # ------------------------------------------------------------------
+    def get_position(self)   -> np.ndarray: return np.array([self.kf.x[0, 0], self.kf.x[1, 0]])
+    def get_velocity(self)   -> np.ndarray: return np.array([self.kf.x[2, 0], self.kf.x[3, 0]])
+    def get_speed(self)      -> float:
+        v = self.get_velocity();  return float(np.sqrt(v[0]**2 + v[1]**2))
+    def get_dimensions(self) -> np.ndarray: return np.array([self.kf.x[4, 0], self.kf.x[5, 0]])
 
     def get_track_state(self, height: float = 1.5) -> TrackState:
-        """
-        Get complete track state for visualization.
-
-        Args:
-            height: Object height (not tracked, use last known)
-
-        Returns:
-            TrackState dataclass
-        """
-        pos = self.get_position()
-        vel = self.get_velocity()
+        pos  = self.get_position()
+        vel  = self.get_velocity()
         dims = self.get_dimensions()
-
         return TrackState(
-            track_id=self.track_id,
-            position=np.array([pos[0], pos[1], height/2]),
-            velocity=vel,
-            dimensions=np.array([dims[1], dims[0], height]),  # [L, W, H]
-            classification=self.classification,
-            confidence=self.confidence,
-            age=self.age,
-            hits=self.hits,
-            time_since_update=self.time_since_update,
-            history=[np.array(h) for h in self.history]
+            track_id          = self.track_id,
+            position          = np.array([pos[0], pos[1], height / 2]),
+            velocity          = vel,
+            dimensions        = np.array([dims[1], dims[0], height]),  # [L, W, H]
+            classification    = self.classification,
+            confidence        = self.confidence,
+            age               = self.age,
+            hits              = self.hits,
+            time_since_update = self.time_since_update,
+            history           = [np.array(h) for h in self.history],
         )
 
     def is_confirmed(self) -> bool:
-        """
-        Check if track is confirmed (reliable).
-
-        A track is confirmed if:
-        - Matched to detections multiple times (not a false positive)
-        - Recently updated (not lost)
-        """
         return self.hits >= 3 and self.time_since_update <= 1
 
     def is_lost(self) -> bool:
-        """
-        Check if track should be deleted.
-
-        Delete tracks that:
-        - Haven't been updated for too long
-        - Are young and haven't been matched (likely false positive)
-        """
-        # Lost if not updated for >5 frames
         if self.time_since_update > 5:
             return True
-
-        # Delete young tracks that haven't been matched
         if self.age < 3 and self.time_since_update > 2:
             return True
-
         return False
 
 
+# ── Multi-object tracker ──────────────────────────────────────────────────────
+
 class MultiObjectTracker:
     """
-    Multi-Object Tracker (MOT) using Kalman Filters.
+    Manages a pool of KalmanObjectTrackers.
 
-    Handles:
-    1. Track initialization from new detections
-    2. Data association (matching detections to tracks)
-    3. Track state management (confirmed, tentative, lost)
-    4. Track deletion for objects that left the scene
+    Pipeline per frame:
+      1. Predict  -- advance all tracks
+      2. Associate -- Hungarian matching on Euclidean centroid distance
+      3. Update   -- update matched tracks, reclassify if static
+      4. Create   -- initialise new tracks for unmatched detections
+      5. Delete   -- remove lost tracks
     """
 
     def __init__(self,
-                 max_age: int = 5,
-                 min_hits: int = 3,
+                 max_age:               int   = 5,
+                 min_hits:              int   = 3,
                  association_threshold: float = 5.0,
-                 dt: float = 0.1):
-        """
-        Initialize multi-object tracker.
-
-        Args:
-            max_age: Maximum frames to keep unmatched track alive
-            min_hits: Minimum hits to confirm a track
-            association_threshold: Maximum distance for detection-track matching
-            dt: Time step between frames
-        """
-        self.max_age = max_age
-        self.min_hits = min_hits
+                 dt:                   float = 0.1):
+        self.max_age               = max_age
+        self.min_hits              = min_hits
         self.association_threshold = association_threshold
-        self.dt = dt
-
-        self.trackers: List[KalmanObjectTracker] = []
+        self.dt                    = dt
+        self.trackers:  List[KalmanObjectTracker] = []
         self.frame_count = 0
 
-    def update(self, features_list: List[ObjectFeatures],
-               verbose: bool = False) -> List[TrackState]:
+    # ------------------------------------------------------------------
+    def update(self,
+               features_list: List[ObjectFeatures],
+               verbose:       bool = False) -> List[TrackState]:
         """
-        Update tracker with new detections from current frame.
-
-        Tracking Pipeline:
-        1. Predict: Move all tracks forward in time
-        2. Associate: Match detections to predicted tracks
-        3. Update: Update matched tracks with measurements
-        4. Create: Initialize new tracks for unmatched detections
-        5. Delete: Remove lost tracks
+        Update tracker with detections from the current frame.
 
         Args:
-            features_list: List of ObjectFeatures from current frame
-            verbose: Print progress information
+            features_list: Detections from classification step
+            verbose:       Print per-frame tracking summary
 
         Returns:
-            List of TrackState for confirmed tracks
+            Confirmed TrackState objects
         """
         self.frame_count += 1
 
-        if verbose:
-            print(f"\n--- Frame {self.frame_count} Tracking ---")
-            print(f"  Detections: {len(features_list)}")
-            print(f"  Active tracks: {len(self.trackers)}")
+        # 1. Predict
+        for t in self.trackers:
+            t.predict()
 
-        # Step 1: Predict all existing tracks
-        for tracker in self.trackers:
-            tracker.predict()
+        # 2. Associate
+        matched, unmatched_dets, _ = self._associate(features_list)
 
-        # Step 2: Data association (Hungarian algorithm)
-        matched, unmatched_dets, unmatched_tracks = self._associate(features_list)
+        # 3. Update matched
+        for det_idx, trk_idx in matched:
+            f = features_list[det_idx]
+            t = self.trackers[trk_idx]
+            meas = np.array([f.center[0], f.center[1], f.width, f.length])
+            t.update(meas)
+            # Only update class if new detection is more specific
+            if f.classification not in ('UNKNOWN', 'STATIC_STRUCTURE'):
+                t.classification = f.classification
+                t.confidence     = f.confidence
 
-        if verbose:
-            print(f"  Matched: {len(matched)}")
-            print(f"  Unmatched detections: {len(unmatched_dets)}")
-            print(f"  Unmatched tracks: {len(unmatched_tracks)}")
-
-        # Step 3: Update matched tracks
-        for det_idx, track_idx in matched:
-            features = features_list[det_idx]
-            tracker = self.trackers[track_idx]
-
-            measurement = np.array([
-                features.center[0],
-                features.center[1],
-                features.width,
-                features.length
-            ])
-
-            tracker.update(measurement)
-            tracker.classification = features.classification
-            tracker.confidence = features.confidence
-
-        # Step 4: Create new tracks for unmatched detections
+        # 4. New tracks for unmatched detections
         for det_idx in unmatched_dets:
-            features = features_list[det_idx]
-
-            new_tracker = KalmanObjectTracker(
-                initial_position=features.center[:2],
-                initial_size=np.array([features.width, features.length]),
-                classification=features.classification,
-                dt=self.dt
+            f   = features_list[det_idx]
+            new = KalmanObjectTracker(
+                initial_position = f.center[:2],
+                initial_size     = np.array([f.width, f.length]),
+                classification   = f.classification,
+                dt               = self.dt,
             )
-            new_tracker.confidence = features.confidence
+            new.confidence = f.confidence
+            self.trackers.append(new)
 
-            self.trackers.append(new_tracker)
+        # 5. Remove lost tracks
+        self.trackers = [t for t in self.trackers if not t.is_lost()]
 
-            if verbose:
-                print(f"  Created new track ID: {new_tracker.track_id}")
-
-        # Step 5: Delete lost tracks
-        active_trackers = []
-        for tracker in self.trackers:
-            if not tracker.is_lost():
-                active_trackers.append(tracker)
-            elif verbose:
-                print(f"  Deleted track ID: {tracker.track_id}")
-
-        self.trackers = active_trackers
-
-        # Return confirmed track states
-        confirmed_tracks = []
-        for tracker in self.trackers:
-            if tracker.is_confirmed():
-                # Estimate height from classification
-                if tracker.classification == 'PEDESTRIAN':
-                    height = 1.7
-                elif tracker.classification == 'VEHICLE':
-                    height = 1.5
-                else:
-                    height = 1.5
-
-                confirmed_tracks.append(tracker.get_track_state(height))
+        # 6. Return confirmed tracks
+        confirmed = []
+        for t in self.trackers:
+            if t.is_confirmed():
+                h = 1.7 if t.classification == 'PEDESTRIAN' else 1.5
+                confirmed.append(t.get_track_state(h))
 
         if verbose:
-            print(f"  Confirmed tracks: {len(confirmed_tracks)}")
+            print(f"  Frame {self.frame_count}: "
+                  f"dets={len(features_list)} active={len(self.trackers)} "
+                  f"confirmed={len(confirmed)}")
 
-        return confirmed_tracks
+        return confirmed
 
+    # ------------------------------------------------------------------
     def _associate(self, features_list: List[ObjectFeatures]) -> Tuple[
             List[Tuple[int, int]], List[int], List[int]]:
-        """
-        Associate detections to existing tracks using Hungarian algorithm.
 
-        Uses Euclidean distance as cost metric.
-
-        Args:
-            features_list: List of detections
-
-        Returns:
-            Tuple of (matched_pairs, unmatched_detections, unmatched_tracks)
-        """
-        if len(self.trackers) == 0:
+        if not self.trackers:
             return [], list(range(len(features_list))), []
-
-        if len(features_list) == 0:
+        if not features_list:
             return [], [], list(range(len(self.trackers)))
 
-        # Build cost matrix: Euclidean distance
-        cost_matrix = np.zeros((len(features_list), len(self.trackers)))
+        # Euclidean centroid distance cost matrix
+        cost = np.zeros((len(features_list), len(self.trackers)))
+        for di, f in enumerate(features_list):
+            for ti, t in enumerate(self.trackers):
+                cost[di, ti] = np.linalg.norm(f.center[:2] - t.get_position())
 
-        for d_idx, features in enumerate(features_list):
-            det_pos = features.center[:2]
+        det_idx, trk_idx = linear_sum_assignment(cost)
 
-            for t_idx, tracker in enumerate(self.trackers):
-                track_pos = tracker.get_position()
-                distance = np.linalg.norm(det_pos - track_pos)
-                cost_matrix[d_idx, t_idx] = distance
+        matched, unmatched_dets = [], list(range(len(features_list)))
+        unmatched_trks          = list(range(len(self.trackers)))
 
-        # Solve assignment problem using Hungarian algorithm
-        det_indices, track_indices = linear_sum_assignment(cost_matrix)
+        for di, ti in zip(det_idx, trk_idx):
+            if cost[di, ti] < self.association_threshold:
+                matched.append((di, ti))
+                unmatched_dets.remove(di)
+                unmatched_trks.remove(ti)
 
-        # Filter matches by threshold
-        matched = []
-        unmatched_dets = list(range(len(features_list)))
-        unmatched_tracks = list(range(len(self.trackers)))
+        return matched, unmatched_dets, unmatched_trks
 
-        for d_idx, t_idx in zip(det_indices, track_indices):
-            if cost_matrix[d_idx, t_idx] < self.association_threshold:
-                matched.append((d_idx, t_idx))
-                unmatched_dets.remove(d_idx)
-                unmatched_tracks.remove(t_idx)
-            else:
-                # Distance too large - not a valid match
-                pass
-
-        return matched, unmatched_dets, unmatched_tracks
-
-    def get_all_tracks(self) -> List[TrackState]:
-        """Get all active track states (including tentative)."""
-        tracks = []
-        for tracker in self.trackers:
-            height = 1.7 if tracker.classification == 'PEDESTRIAN' else 1.5
-            tracks.append(tracker.get_track_state(height))
-        return tracks
-
+    # ------------------------------------------------------------------
     def get_confirmed_tracks(self) -> List[TrackState]:
-        """Get only confirmed track states."""
         tracks = []
-        for tracker in self.trackers:
-            if tracker.is_confirmed():
-                height = 1.7 if tracker.classification == 'PEDESTRIAN' else 1.5
-                tracks.append(tracker.get_track_state(height))
+        for t in self.trackers:
+            if t.is_confirmed():
+                h = 1.7 if t.classification == 'PEDESTRIAN' else 1.5
+                tracks.append(t.get_track_state(h))
         return tracks
 
     def reset(self) -> None:
-        """Reset the tracker, clearing all tracks."""
-        self.trackers = []
+        self.trackers    = []
         self.frame_count = 0
         KalmanObjectTracker._next_id = 0
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    from data_loader import generate_simulated_frame
-    from preprocessing import preprocess_point_cloud
-    from clustering import cluster_point_cloud
-    from classification import extract_and_classify
-
-    print("="*70)
-    print("MULTI-OBJECT TRACKING MODULE - TEST")
-    print("="*70)
-
-    # Reset tracker ID counter
-    KalmanObjectTracker._next_id = 0
-
-    # Initialize tracker
-    tracker = MultiObjectTracker(
-        max_age=5,
-        min_hits=3,
-        association_threshold=5.0,
-        dt=0.1
-    )
-
-    print("\n[Test] Processing simulated sequence (10 frames)...")
-
-    for frame_idx in range(10):
-        # Generate frame with motion
-        raw_points = generate_simulated_frame(
-            num_points=15000,
-            seed=42,
-            frame_index=frame_idx
-        )
-
-        # Preprocess
-        processed_points = preprocess_point_cloud(raw_points, verbose=False)
-
-        # Cluster
-        labels, num_clusters = cluster_point_cloud(processed_points, verbose=False)
-
-        # Extract features and classify
-        features_list, classifications = extract_and_classify(
-            processed_points, labels, verbose=False
-        )
-
-        # Update tracker
-        confirmed_tracks = tracker.update(features_list, verbose=True)
-
-        # Print track info
-        for track in confirmed_tracks:
-            pos = track.position
-            vel = track.velocity
-            speed = np.sqrt(vel[0]**2 + vel[1]**2)
-            print(f"    Track {track.track_id}: {track.classification}, "
-                  f"pos=({pos[0]:.1f}, {pos[1]:.1f}), "
-                  f"speed={speed:.2f}m/s, age={track.age}")
-
-    print("\n" + "="*70)
-    print("Tracking module ready for use.")
-    print("="*70)
