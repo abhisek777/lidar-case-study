@@ -32,7 +32,8 @@ from typing import List, Dict, Tuple
 # ── Paths ─────────────────────────────────────────────────────────────────────
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR   = os.path.join(BASE_DIR, 'Lider datasets')
-OUT_DIR    = BASE_DIR          # save PNGs next to script
+OUT_DIR    = os.path.join(BASE_DIR, 'figures')
+os.makedirs(OUT_DIR, exist_ok=True)
 
 sys.path.insert(0, BASE_DIR)
 
