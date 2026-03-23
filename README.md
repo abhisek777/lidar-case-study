@@ -3,6 +3,8 @@
 
 **Author:** Kalpana Abhiseka Maddi | **Registration:** 10249408 | **Tutor:** Florian Simroth
 
+**GitHub Repository:** https://github.com/abhisek777/lidar-case-study
+
 ---
 
 ## Overview
