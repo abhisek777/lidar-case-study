@@ -4,7 +4,7 @@ LiDAR Preprocessing Module
 Autonomous Driving Perception Pipeline - Preprocessing
 
 This module implements preprocessing steps for LiDAR point clouds:
-1. Range filtering (5-250m as per assignment specification)
+1. Range filtering (2-100m — effective scene range in this recording)
 2. Ground plane removal using RANSAC
 3. Noise filtering using statistical outlier removal
 4. Voxel grid downsampling for computational efficiency
@@ -31,17 +31,17 @@ class LiDARPreprocessor:
     """
 
     def __init__(self,
-                 min_range: float = 5.0,
-                 max_range: float = 250.0,
-                 voxel_size: float = 0.1,
-                 ground_threshold: float = 0.2,
+                 min_range: float = 2.0,
+                 max_range: float = 100.0,
+                 voxel_size: float = 0.15,
+                 ground_threshold: float = 0.25,
                  ransac_iterations: int = 1000):
         """
         Initialize preprocessor with parameters.
 
         Args:
             min_range: Minimum range in meters (removes near-field noise)
-            max_range: Maximum range in meters (removes unreliable distant points)
+            max_range: Maximum range in meters (removes far-field points beyond effective scene range)
             voxel_size: Voxel size for downsampling in meters
             ground_threshold: Distance threshold for RANSAC ground fitting
             ransac_iterations: Number of RANSAC iterations
@@ -60,7 +60,7 @@ class LiDARPreprocessor:
         Apply full preprocessing pipeline.
 
         Pipeline steps:
-        1. Range filtering (5-250m)
+        1. Range filtering (min_range to max_range m)
         2. Voxel grid downsampling
         3. Ground plane removal (RANSAC)
         4. Statistical outlier removal

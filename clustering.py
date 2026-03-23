@@ -32,9 +32,9 @@ class PointCloudClusterer:
     """
 
     def __init__(self,
-                 eps: float = 0.5,
-                 min_samples: int = 10,
-                 min_cluster_size: int = 5,
+                 eps: float = 0.8,
+                 min_samples: int = 8,
+                 min_cluster_size: int = 8,
                  max_cluster_size: int = 10000):
         """
         Initialize the clusterer.

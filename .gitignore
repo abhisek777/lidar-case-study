@@ -1,5 +1,16 @@
 # Submission documents (not for repo)
 *.docx
+REPORT_Kalpana_Abhiseka_Maddi_DLMDSEAAD02.pdf
+
+# Guidelines and personal documents
+Guideline/
+01.01.2025 to 28.02.2026 statement.pdf
+
+# Video outputs
+lidar_3d_tracking.mp4
+lidar_cinematic.mp4
+lidar_cinematic_real.mp4
+my outputs/
 
 # Large data files
 *.zip

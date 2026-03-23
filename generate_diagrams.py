@@ -461,7 +461,7 @@ def fig6_track_length_dist(track_lengths, sensor_fps=10.0):
     ax.set_title(f'Distribution of Track Lengths Across the Dataset  '
                  f'({len(lengths)} confirmed tracks total)',
                  color=TEXT_COL, fontsize=12, fontweight='bold')
-    ax.set_xlim(0, min(lengths.max() + 2, 100))
+    ax.set_xlim(0, lengths.max() + 5)
 
     plt.tight_layout()
     save(fig, 'fig6_track_length_dist.png')

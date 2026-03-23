@@ -116,7 +116,7 @@ def fig_s1_range_distribution(pts):
 
     from matplotlib.patches import Patch
     handles = [
-        Patch(facecolor=ACCENT2, label='Near field (< 20 m)'),
+        Patch(facecolor=ACCENT2, label='Near field (5–20 m)'),
         Patch(facecolor=ACCENT,  label='Mid range (20–100 m)'),
         Patch(facecolor=ACCENT3, label='Far field (> 100 m)'),
         plt.Line2D([0],[0], color='#FFD700', lw=1.8, ls='--', label=f'Mean = {mean_d:.1f} m'),
@@ -128,7 +128,7 @@ def fig_s1_range_distribution(pts):
 
     ax.set_xlabel('Distance from Sensor [m]', color=TEXT_COL)
     ax.set_ylabel('Number of LiDAR Points', color=TEXT_COL)
-    ax.set_title('Distribution of LiDAR Detection Distances\n'
+    ax.set_title('Distribution of LiDAR Point Distances\n'
                  f'(sampled from all 718 frames  ·  {len(dist):,} points)',
                  color=TEXT_COL, fontsize=12, fontweight='bold')
     ax.set_xlim(0, 130)
@@ -142,39 +142,37 @@ def fig_s1_range_distribution(pts):
 def fig_s2_density_vs_distance(pts):
     dist = np.sqrt(pts[:, 0]**2 + pts[:, 1]**2 + pts[:, 2]**2)
 
-    # Compute density per 2 m range bin (points / bin_width)
+    # Compute point count per 2 m range bin
     bin_width = 2.0
     bin_edges = np.arange(0, 105, bin_width)
     bin_centres = (bin_edges[:-1] + bin_edges[1:]) / 2
     counts, _ = np.histogram(dist, bins=bin_edges)
-
-    # Theoretical inverse-square reference (normalised)
-    ref_d = bin_centres[bin_centres > 0]
-    ref_y = counts[bin_centres > 0].max() / (ref_d / ref_d[ref_d > 0][0]) ** 2
 
     fig, ax = plt.subplots(figsize=(12, 6), facecolor=DARK_BG)
     styled_ax(ax)
 
     ax.bar(bin_centres, counts, width=bin_width * 0.85,
            color=ACCENT, edgecolor=DARK_BG, linewidth=0.4,
-           alpha=0.8, label='Observed point count')
-    ax.plot(ref_d, ref_y, color='#FFD700', lw=2.0, ls='--',
-            label='Theoretical inverse-square falloff')
+           alpha=0.8, label='Observed point count per 2 m bin')
+
+    peak_bin = bin_centres[np.argmax(counts)]
+    ax.axvline(peak_bin, color='#FFD700', lw=1.8, ls='--',
+               label=f'Peak density at {peak_bin:.0f} m')
 
     ax.set_xlabel('Distance from Sensor [m]', color=TEXT_COL)
     ax.set_ylabel('LiDAR Point Count per 2 m Bin', color=TEXT_COL)
-    ax.set_title('Point Density vs Distance from Sensor\n'
-                 'Observed density decreases with distance — consistent with angular LiDAR geometry',
+    ax.set_title('Point Count vs Distance from Sensor\n'
+                 'Scene peak at 15–20 m; count decreases beyond — fewer surfaces at greater range',
                  color=TEXT_COL, fontsize=12, fontweight='bold')
     ax.set_xlim(0, 105)
     ax.legend(facecolor=DARK_BG, edgecolor=GRID_COL, labelcolor=TEXT_COL, fontsize=9)
 
-    # Annotate zones
-    ax.axvspan(0,   20,  alpha=0.06, color=ACCENT2, label='High density zone')
-    ax.axvspan(20, 100,  alpha=0.04, color=ACCENT,  label='Medium density zone')
-    ax.text(8,   counts.max() * 0.92, 'High\ndensity',  color=ACCENT2,
+    # Annotate zones (5 m = sensor minimum range)
+    ax.axvspan(5,   20,  alpha=0.06, color=ACCENT2)
+    ax.axvspan(20, 100,  alpha=0.04, color=ACCENT)
+    ax.text(8,   counts.max() * 0.92, 'Near\nfield',   color=ACCENT2,
             fontsize=8, ha='center', fontweight='bold')
-    ax.text(55,  counts.max() * 0.20, 'Medium density', color=ACCENT,
+    ax.text(60,  counts.max() * 0.20, 'Mid / far field', color=ACCENT,
             fontsize=8, ha='center', fontweight='bold')
 
     plt.tight_layout()

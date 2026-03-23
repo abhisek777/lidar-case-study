@@ -121,19 +121,19 @@ Prior to any algorithmic processing, all 718 frames were subjected to a sanity c
 
 ### 5.1 Range Compliance Analysis
 
-Point-wise Euclidean distances were computed for all frames. The effective range in this recording is 5–100 m for the vast majority of points. While the sensor specification allows up to 250 m, the far field beyond 100 m contains negligible returns in this stationary urban recording due to buildings and vegetation blocking the line of sight. This is physically expected and reflects the specific scene geometry, not a sensor limitation. The pipeline's `max_range` parameter is therefore set to **100.0 m**, matching the actual data distribution.
+Point-wise Euclidean distances were computed for all frames. The effective range in this recording is 5–100 m for the vast majority of points. While the sensor specification allows up to 250 m, the far field beyond 100 m contains negligible returns in this stationary urban recording due to buildings and vegetation blocking the line of sight. This is physically expected and reflects the specific scene geometry, not a sensor limitation. The pipeline's `max_range` parameter is therefore set to **100.0 m**, matching the actual data distribution. The full distance distribution is shown in Figure S1.
 
 ### 5.2 Point Density Versus Distance
 
-Point density (points per unit area) was measured as a function of range. As expected from the angular projection geometry of LiDAR sensors, density decreases with the square of distance (Rusu & Cousins, 2011). This has a direct implication for classification: distant objects generate fewer points per cluster, making bounding box estimation less reliable. The conservative classification thresholds defined in Section 7 account for this by assigning UNKNOWN rather than forcing uncertain detections into incorrect categories.
+Point count per 2 m range bin was computed across all sampled frames (Figure S2). The observed distribution peaks at approximately 15–20 m, reflecting the scene geometry: the majority of surfaces (building facades, pedestrians, vehicles) in this recording are concentrated within that range band. Beyond 20 m, the count decreases steadily as fewer scene surfaces fall within each successive range bin. This reduction in point count at greater ranges has a direct implication for classification: distant objects produce fewer points per cluster, making bounding box estimation less precise. The conservative classification thresholds in Section 7 account for this by assigning UNKNOWN to objects with insufficient geometric evidence (Rusu & Cousins, 2011).
 
 ### 5.3 Height Distribution Analysis
 
-The Z-coordinate distribution shows a dominant ground plane peak near Z ≈ 0 m, a secondary distribution from vehicle and pedestrian bodies at Z ≈ 0.5–2.0 m, and a tail extending to Z > 3 m corresponding to buildings and gantries. This bimodal structure confirms the effectiveness of height-based ground filtering and validates that the height dimension carries discriminative information for object classification.
+As shown in Figure S3, the Z-coordinate distribution shows a dominant ground plane peak near Z ≈ 0 m, a secondary distribution from vehicle and pedestrian bodies at Z ≈ 0.5–2.0 m, and a tail extending to Z > 3 m corresponding to buildings and gantries. This bimodal structure confirms the effectiveness of height-based ground filtering and validates that the height dimension carries discriminative information for object classification.
 
 ### 5.4 Intensity Analysis
 
-LiDAR return intensity values are distributed within a consistent range across all 718 frames, with no saturation artefacts or anomalous dropouts. This confirms stable sensor operation throughout the recording and validates dataset quality for perception processing.
+As shown in Figure S4, LiDAR return intensity values are distributed within a consistent range across all 718 frames, with no saturation artefacts or anomalous dropouts. This confirms stable sensor operation throughout the recording and validates dataset quality for perception processing.
 
 ---
 
@@ -203,7 +203,7 @@ If ANY of the following conditions holds, the object is immediately classified a
 | Height H | > 4.0 m | Exceeds tallest vehicles; indicates buildings or gantries |
 | Aspect ratio L/W | > 6.0 | Highly elongated; characteristic of walls and fences |
 
-This pre-filter is critical. Walls and building facades often have dimensions that nominally overlap with the vehicle length range (2–8 m) in a single axis, but are unambiguously identified by their footprint or aspect ratio. Testing static conditions first ensures these objects are never forwarded to the vehicle or pedestrian checks.
+This pre-filter is critical. Walls and building facades often have dimensions that nominally overlap with the vehicle length range (2–8 m) in a single axis, but are unambiguously identified by their footprint or aspect ratio. Testing static conditions first prevents these objects from being forwarded to the vehicle or pedestrian checks.
 
 **Step 2 — Vehicle check:**
 All of the following must hold simultaneously:
@@ -305,7 +305,7 @@ The following verification-oriented proxy metrics are reported, following Pendle
 |---|---|---|
 | Detection CV | std(clusters per frame) / mean(clusters per frame) | Low CV indicates stable preprocessing and clustering |
 | Temporal Stability Index (TSI) | std(active tracks) / mean(active tracks) | TSI < 0.3 indicates stable tracking; lower is better |
-| Mean track length | Mean number of frames per confirmed track | Longer tracks indicate reliable data association |
+| Mean track length | Mean number of frames per confirmed track | Longer tracks indicate stable data association |
 | Classification distribution | Fraction of track-observations assigned each label | Reflects conservative vs. aggressive design choices |
 | Label consistency | Modal class fraction per track, averaged across tracks | High value indicates stable feature extraction |
 
@@ -342,7 +342,7 @@ The distribution of detections per frame over the 71.8-second recording is shown
 | Std active confirmed tracks per frame | 2.9 |
 | Temporal Stability Index (TSI) | **0.06** |
 
-A TSI of 0.06 is well within the target range (TSI < 0.3) and indicates highly stable multi-object tracking throughout the recording. The very low TSI reflects that the scene, viewed from a stationary sensor, exhibits a relatively stable occupancy of objects within the 70° × 30° field of view, with objects continuously entering at one boundary and exiting at another. The active track count over time is shown in Figure 5.
+A TSI of 0.06 is well within the target range (TSI < 0.3) and indicates consistent multi-object tracking behavior throughout the recording. The very low TSI reflects that the scene, viewed from a stationary sensor, exhibits a relatively stable occupancy of objects within the 70° × 30° field of view, with objects continuously entering at one boundary and exiting at another. The active track count over time is shown in Figure 5.
 
 ### 10.3 Track Length Distribution
 
@@ -355,7 +355,7 @@ A TSI of 0.06 is well within the target range (TSI < 0.3) and indicates highly s
 | Median track length | 53 frames (5.3 s) |
 | Minimum track length | 2 frames (0.2 s) |
 
-The mean confirmed track length of 126.5 frames (12.65 s) demonstrates that the data association reliably maintains object identity across extended observation windows. The substantial difference between mean and median (126.5 vs. 53 frames) is characteristic of a bimodal distribution: a cluster of shorter tracks (objects near the field-of-view boundary with limited dwell times) and a cluster of long persistent tracks (objects — particularly pedestrians and static structures — that remained continuously visible for much of the 71.8-second recording). Short tracks of 2–5 frames correspond to objects at the scene boundary, which is physically expected in a fixed-sensor configuration. The track length distribution is shown in Figure 6.
+The mean confirmed track length of 126.5 frames (12.65 s) demonstrates that the data association maintains object identity consistently across extended observation windows. The substantial difference between mean and median (126.5 vs. 53 frames) is characteristic of a bimodal distribution: a cluster of shorter tracks (objects near the field-of-view boundary with limited dwell times) and a cluster of long persistent tracks (objects — particularly pedestrians and static structures — that remained continuously visible for much of the 71.8-second recording). Short tracks of 2–5 frames correspond to objects at the scene boundary, which is physically expected in a fixed-sensor configuration. The track length distribution is shown in Figure 6.
 
 Note on units: all track lengths are in frames. At a sensor rate of 10 Hz (dt = 0.10 s per frame), multiply frame count by 0.10 to obtain seconds.
 
@@ -384,7 +384,7 @@ These fractions represent a **distribution statistic**, not a classification acc
 | Mean label consistency | **90.3%** |
 | Std label consistency | 11.4% |
 
-A mean label consistency of 90.3% indicates that confirmed tracks retain their classification label for 90.3% of their active frames on average. This validates the stability of geometric feature extraction: once an object is observed from a sufficient number of viewpoints to produce reliable bounding box dimensions, the classification remains stable across frames. The non-trivial standard deviation (11.4%) reflects the genuine diversity in track behaviour — long-lived tracks of persistent objects (high consistency) versus tracks of partially occluded objects near the field boundary (lower consistency due to fluctuating cluster dimensions).
+A mean label consistency of 90.3% indicates that confirmed tracks retain their classification label for 90.3% of their active frames on average. This validates the stability of geometric feature extraction: once an object is observed from a sufficient number of viewpoints to produce consistent bounding box dimensions, the classification remains stable across frames. The non-trivial standard deviation (11.4%) reflects the genuine diversity in track behaviour — long-lived tracks of persistent objects (high consistency) versus tracks of partially occluded objects near the field boundary (lower consistency due to fluctuating cluster dimensions).
 
 ---
 
@@ -400,11 +400,11 @@ The primary visualization (`lidar_cinematic_real.mp4`, 1920 × 1080, 718 frames 
 - Neon red-orange boxes for VEHICLE tracks (labelled "VEH")
 - Active object count displayed in the bottom-right corner
 
-The video confirms: vehicle-shaped clusters receive consistent VEHICLE labels across consecutive frames; pedestrian-scale clusters receive consistent PEDESTRIAN labels; large flat clusters (walls, building facades) receive STATIC\_STRUCTURE labels and are correctly distinguished from vehicles; and track IDs remain stable across the majority of the 71.8-second recording.
+A representative frame from the 3D point cloud is shown in Figure 1, and the corresponding bounding box overlay in the bird's-eye view is shown in Figure 2. The video confirms: vehicle-shaped clusters receive consistent VEHICLE labels across consecutive frames; pedestrian-scale clusters receive consistent PEDESTRIAN labels; large flat clusters (walls, building facades) receive STATIC\_STRUCTURE labels and are correctly distinguished from vehicles; and track IDs remain stable across the majority of the 71.8-second recording.
 
 ### 11.2 3-D Ground-Level Tracking Video
 
-A second video (`lidar_3d_tracking.mp4`) provides a ground-level three-dimensional perspective rendered with matplotlib. Bounding boxes are extruded to the estimated object height, allowing visual inspection of the 3D consistency of the AABB estimates. Vehicle boxes are appropriately sized (~4.5 × 1.8 × 1.5 m); pedestrian boxes are correctly scaled (~0.6 × 0.6 × 1.7 m). The bounding boxes in this video are genuine 3D axis-aligned boxes rendered in a 3D coordinate system — not 2D rectangles overlaid on a projection.
+A second video (`lidar_3d_tracking.mp4`) provides a ground-level three-dimensional perspective rendered with matplotlib. Example object trajectories accumulated across the full recording are shown in Figure 3. Bounding boxes are extruded to the estimated object height, allowing visual inspection of the 3D consistency of the AABB estimates. Vehicle boxes are appropriately sized (~4.5 × 1.8 × 1.5 m); pedestrian boxes are correctly scaled (~0.6 × 0.6 × 1.7 m). The bounding boxes in this video are genuine 3D axis-aligned boxes rendered in a 3D coordinate system — not 2D rectangles overlaid on a projection.
 
 ### 11.3 Known Limitations in Visualization
 
@@ -432,7 +432,7 @@ The pipeline processes all 718 frames (71.8 s) consistently. Detection stability
 
 **Constant-velocity motion model:** The Kalman filter assumes constant velocity. For objects with sharp turns or sudden braking, a constant turn-rate (CTRV) model would yield better predictions over the coasting horizon (Thrun, Burgard & Fox, 2005).
 
-**Single sensor modality:** LiDAR-only perception is affected by the inverse-square density falloff at range. Fusion with camera or radar data would improve classification reliability for distant objects (Cho et al., 2014).
+**Single sensor modality:** LiDAR-only perception is affected by the reduced point density at greater range. Fusion with camera or radar data would reduce classification errors for distant objects (Cho et al., 2014).
 
 **Stationary sensor platform:** The recording is from a fixed position. For a moving vehicle platform, static infrastructure would appear to move in the sensor frame; ego-motion compensation (Pomerleau et al., 2013) would be required.
 
